@@ -24,10 +24,10 @@ usbipd detach --busid <BUSID>
 
 For the flake we use: https://github.com/michalrus/esp-rust-nix-sandbox
 
-cd embassy_hello_world
+cd embassy_blinky
 cargo build --release
 cargo doc --release --open
-espflash save-image --chip esp32 target/xtensa-esp32-none-elf/release/embassy-hello-world out.bin
+espflash save-image --chip esp32 target/xtensa-esp32-none-elf/release/embassy_blinky out.bin
 
 To flash, and monitor output:
   • cargo espflash flash --monitor --features esp32 --target xtensa-esp32-none-elf --release
@@ -36,7 +36,7 @@ To flash, and monitor output:
 
 
 
-@embassy_hello_world/src/main.rs is meant to be illuminating the smart leds on the EMF Camp tildagon badge. but it
+@embassy_blinky/src/main.rs is meant to be illuminating the smart leds on the EMF Camp tildagon badge. but it
    is not working, currently not even compiling. i want you to seach the official firmware source code from
    badge-2024-software/ for all information regarding how to drive the LEDs. create @HARDWARE.md and we will start to
    document the hardware in a rust-friendly way, beginning with the LED susbsystem  

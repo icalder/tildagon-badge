@@ -24,7 +24,7 @@ shared open-drain interrupt line (GPIO10), which is also shared with the FUSB302
 WILL assert INT on change; bit = 1 means DISABLED. INT is cleared by reading the input register
 (0x00 for Port 0, 0x01 for Port 1). Active-low: button pressed = bit is 0.
 
-## Implementation in `embassy_hello_world/src/main.rs`
+## Implementation in `embassy_blinky/src/main.rs`
 
 The main task sets up an `esp_hal::gpio::Input` on GPIO10 with pull-up and calls
 `wait_for_falling_edge().await` in a loop. On each falling edge:

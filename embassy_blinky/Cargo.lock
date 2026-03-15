@@ -282,24 +282,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "embassy-hello-world"
-version = "0.0.0"
-dependencies = [
- "embassy-executor",
- "embassy-sync 0.6.2",
- "embassy-time",
- "esp-backtrace",
- "esp-bootloader-esp-idf",
- "esp-hal",
- "esp-hal-smartled",
- "esp-println",
- "esp-rtos",
- "log",
- "smart-leds",
- "static_cell",
-]
-
-[[package]]
 name = "embassy-sync"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -380,6 +362,24 @@ dependencies = [
  "critical-section",
  "embassy-sync 0.7.2",
  "embassy-usb-driver",
+]
+
+[[package]]
+name = "embassy_blinky"
+version = "0.0.0"
+dependencies = [
+ "embassy-executor",
+ "embassy-sync 0.6.2",
+ "embassy-time",
+ "esp-backtrace",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-hal-smartled",
+ "esp-println",
+ "esp-rtos",
+ "log",
+ "smart-leds",
+ "static_cell",
 ]
 
 [[package]]

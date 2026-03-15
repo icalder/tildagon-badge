@@ -1,5 +1,5 @@
 [package]
-name = "embassy-hello-world"
+name = "embassy_blinky"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -73,7 +73,7 @@ lto = "fat"
 codegen-units = 1
 
 [[bin]]
-name = "embassy-hello-world"
+name = "embassy_blinky"
 path = "src/main.rs"
 # In embedded dev, the tests should be compiled for and run on the host
 # architecture, as much as possible. You can also have an on-device integration
