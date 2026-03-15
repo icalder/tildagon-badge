@@ -246,32 +246,6 @@ async fn main(spawner: Spawner) {
         log::error!("0x5a LED power enable failed: {:?}", e);
     }
 
-    // Enable AW9523B interrupts for button pins. Register 0x06 is the interrupt
-    // mask: 0 = interrupt enabled, 1 = disabled. Write each port register
-    // separately (one byte per write), matching the reference firmware.
-    //
-    // 0x59 Port 0 bits 0-3 = buttons C, D, E, F  →  mask 0xF0 (unmask 0-3)
-    if let Err(e) = i2c.write(0x59u8, &[0x06, 0xF0]) {
-        log::error!("0x59 port0 int enable failed: {:?}", e);
-    }
-    if let Err(e) = i2c.write(0x59u8, &[0x07, 0xFF]) {
-        log::error!("0x59 port1 int disable failed: {:?}", e);
-    }
-    // 0x5a Port 0 bits 6-7 = buttons A, B  →  mask 0x3F (unmask 6-7)
-    if let Err(e) = i2c.write(0x5au8, &[0x06, 0x3F]) {
-        log::error!("0x5a port0 int enable failed: {:?}", e);
-    }
-    if let Err(e) = i2c.write(0x5au8, &[0x07, 0xFF]) {
-        log::error!("0x5a port1 int disable failed: {:?}", e);
-    }
-    // 0x58 is all disabled (no buttons) — also write separately to be safe
-    if let Err(e) = i2c.write(0x58u8, &[0x06, 0xFF]) {
-        log::warn!("0x58 port0 int disable failed: {:?}", e);
-    }
-    if let Err(e) = i2c.write(0x58u8, &[0x07, 0xFF]) {
-        log::warn!("0x58 port1 int disable failed: {:?}", e);
-    }
-
     // Clear ALL pending interrupts before entering the loop.
     // GPIO10 is an open-drain, wired-OR line shared by the three AW9523B expanders
     // AND the FUSB302B USB power controller (0x22). Any device with unread interrupt
