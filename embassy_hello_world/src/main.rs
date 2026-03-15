@@ -180,45 +180,18 @@ async fn main(spawner: Spawner) {
 
     // Full init for 0x58 and 0x59 (safe: no USB-sensitive pins on these chips)
     for addr in [0x58u8, 0x59u8] {
-        // 1. Soft reset
-        if let Err(e) = i2c.write(addr, &[0x7F, 0x00]) {
-            log::warn!("0x{:02x} soft reset failed: {:?}", addr, e);
-        }
-        delay.delay_millis(5);
-        // 2. Disable all interrupts — write port 0 and port 1 masks separately.
-        // The reference firmware (aw9523b.c) writes one register at a time.
-        if let Err(e) = i2c.write(addr, &[0x06, 0xFF]) {
-            log::warn!("0x{:02x} int port0 disable failed: {:?}", addr, e);
-        }
-        if let Err(e) = i2c.write(addr, &[0x07, 0xFF]) {
-            log::warn!("0x{:02x} int port1 disable failed: {:?}", addr, e);
-        }
-        delay.delay_millis(5);
-        // 3. All pins as inputs
-        if let Err(e) = i2c.write(addr, &[0x04, 0xFF, 0xFF]) {
-            log::warn!("0x{:02x} direction reg failed: {:?}", addr, e);
-        }
-        delay.delay_millis(5);
-        // 4. Global control register (push-pull mode)
-        if let Err(e) = i2c.write(addr, &[0x11, 0x10]) {
-            log::warn!("0x{:02x} GCR failed: {:?}", addr, e);
-        }
-        delay.delay_millis(5);
+        if i2c.write(addr, &[0x7F, 0x00]).is_err() { log::warn!("0x{:02x} reset failed", addr); } // Soft reset
+        delay.delay_millis(2);
+        if i2c.write(addr, &[0x06, 0xFF, 0xFF]).is_err() { log::warn!("0x{:02x} mask failed", addr); } // Mask all interrupts (P0 & P1)
+        if i2c.write(addr, &[0x04, 0xFF, 0xFF]).is_err() { log::warn!("0x{:02x} dir failed", addr); }  // All pins as inputs
+        if i2c.write(addr, &[0x11, 0x10]).is_err() { log::warn!("0x{:02x} GCR failed", addr); }      // GCR: push-pull mode
     }
 
     // Additional 0x5a config — NO soft reset (would float pin 4 and break USB!)
-    // Output and direction registers were already set above; just configure the rest.
-    if let Err(e) = i2c.write(0x5au8, &[0x06, 0xFF]) {
-        log::warn!("0x5a int port0 disable failed: {:?}", e);
-    }
-    if let Err(e) = i2c.write(0x5au8, &[0x07, 0xFF]) {
-        log::warn!("0x5a int port1 disable failed: {:?}", e);
-    }
-    delay.delay_millis(5);
-    if let Err(e) = i2c.write(0x5au8, &[0x11, 0x10]) {
-        log::warn!("0x5a GCR failed: {:?}", e);
-    }
-    delay.delay_millis(5);
+    // Output and direction registers were already set early above to secure the USB mux.
+    if i2c.write(0x5au8, &[0x06, 0xFF, 0xFF]).is_err() { log::warn!("0x5a mask failed"); } // Mask interrupts
+    if i2c.write(0x5au8, &[0x11, 0x10]).is_err() { log::warn!("0x5a GCR failed"); }      // GCR: push-pull mode
+    delay.delay_millis(2);
 
     // Enable LED power: 0x5a pin 2 HIGH (5V supply for NeoPixels)
     if let Err(e) = i2c.write(0x5au8, &[0x02, 1 << 2]) {
