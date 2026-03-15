@@ -50,7 +50,7 @@ async fn button_monitor(
 
     // Wait for real button press signal from main loop
     loop {
-        let _ = rx.receive().await;
+        rx.receive().await;
         esp_println::println!("[BUTTON_MONITOR] Button C (CONFIRM) pressed!");
     }
 }
@@ -64,7 +64,7 @@ async fn blinky(
 
     loop {
         // This awaits until button_monitor sends an event - no polling, no busy loop
-        let _ = rx.receive().await;
+        rx.receive().await;
 
         esp_println::println!("[BLINKY] Starting LED animation...");
         let colors = [RED, GREEN, BLUE, YELLOW, MAGENTA, CYAN, WHITE];
@@ -144,53 +144,109 @@ async fn main(spawner: Spawner) {
     let mut dummy = [0u8; 2];
 
     // 1. Silence FUSB302B on Mux Port 0 (usb_out)
-    let _ = i2c.write(0x77u8, &[1 << 0]);
+    if i2c.write(0x77u8, &[1 << 0]).is_err() {
+        log::warn!("Mux port 0 select failed");
+    }
     delay.delay_millis(2);
-    let _ = i2c.write(0x22u8, &[0x0C, 0x01]); // Soft reset
+    if i2c.write(0x22u8, &[0x0C, 0x01]).is_err() {
+        log::warn!("FUSB 0x22 (p0) reset failed");
+    }
     delay.delay_millis(2);
-    let _ = i2c.write(0x22u8, &[0x0B, 0x00]); // Power off oscillator/toggling
-    let _ = i2c.write(0x22u8, &[0x04, 0x02]); // Global interrupt mask (CONTROL0 bit 1)
-    let _ = i2c.write(0x22u8, &[0x0A, 0xFF]); // Mask interrupts
-    let _ = i2c.write(0x22u8, &[0x0E, 0xFF]); // Mask interrupts A
-    let _ = i2c.write(0x22u8, &[0x0F, 0xFF]); // Mask interrupts B
-    let _ = i2c.write_read(0x22u8, &[0x3E], &mut dummy); // Clear INTAB
-    let _ = i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]); // Clear INT
+    if i2c.write(0x22u8, &[0x0B, 0x00]).is_err() {
+        log::warn!("FUSB 0x22 (p0) osc off failed");
+    }
+    if i2c.write(0x22u8, &[0x04, 0x02]).is_err() {
+        log::warn!("FUSB 0x22 (p0) gmask failed");
+    }
+    if i2c.write(0x22u8, &[0x0A, 0xFF]).is_err() {
+        log::warn!("FUSB 0x22 (p0) mask failed");
+    }
+    if i2c.write(0x22u8, &[0x0E, 0xFF]).is_err() {
+        log::warn!("FUSB 0x22 (p0) maskA failed");
+    }
+    if i2c.write(0x22u8, &[0x0F, 0xFF]).is_err() {
+        log::warn!("FUSB 0x22 (p0) maskB failed");
+    }
+    if i2c.write_read(0x22u8, &[0x3E], &mut dummy).is_err() {
+        log::warn!("FUSB 0x22 (p0) clear INTAB failed");
+    }
+    if i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]).is_err() {
+        log::warn!("FUSB 0x22 (p0) clear INT failed");
+    }
 
     // 2. Silence BQ25895 and FUSB302B on Mux Port 7 (system)
-    let _ = i2c.write(0x77u8, &[1 << 7]);
+    if i2c.write(0x77u8, &[1 << 7]).is_err() {
+        log::warn!("Mux port 7 select failed");
+    }
     delay.delay_millis(2);
 
     // BQ25895: disable watchdog and ADC continuous mode
-    let _ = i2c.write(0x6Au8, &[0x14, 0x80]); // Reset
+    if i2c.write(0x6Au8, &[0x14, 0x80]).is_err() {
+        log::warn!("BQ25895 reset failed");
+    }
     delay.delay_millis(10);
-    let _ = i2c.write(0x6Au8, &[0x02, 0x00]); // ADC one-shot (disable continuous 1Hz INT)
-    let _ = i2c.write(0x6Au8, &[0x07, 0x8C]); // Watchdog off
-    let _ = i2c.write_read(0x6Au8, &[0x0B], &mut dummy); // Clear status/fault INT
+    if i2c.write(0x6Au8, &[0x02, 0x00]).is_err() {
+        log::warn!("BQ25895 ADC cfg failed");
+    }
+    if i2c.write(0x6Au8, &[0x07, 0x8C]).is_err() {
+        log::warn!("BQ25895 WDT off failed");
+    }
+    if i2c.write_read(0x6Au8, &[0x0B], &mut dummy).is_err() {
+        log::warn!("BQ25895 clear INT failed");
+    }
 
     // FUSB302B (usb_in): silence interrupts
-    let _ = i2c.write(0x22u8, &[0x0C, 0x01]); // Soft reset
+    if i2c.write(0x22u8, &[0x0C, 0x01]).is_err() {
+        log::warn!("FUSB 0x22 (p7) reset failed");
+    }
     delay.delay_millis(2);
-    let _ = i2c.write(0x22u8, &[0x0B, 0x00]); // Power off oscillator/toggling
-    let _ = i2c.write(0x22u8, &[0x04, 0x02]); // Global interrupt mask
-    let _ = i2c.write(0x22u8, &[0x0A, 0xFF]); // Mask
-    let _ = i2c.write(0x22u8, &[0x0E, 0xFF]); // Mask A
-    let _ = i2c.write(0x22u8, &[0x0F, 0xFF]); // Mask B
-    let _ = i2c.write_read(0x22u8, &[0x3E], &mut dummy);
-    let _ = i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]);
+    if i2c.write(0x22u8, &[0x0B, 0x00]).is_err() {
+        log::warn!("FUSB 0x22 (p7) osc off failed");
+    }
+    if i2c.write(0x22u8, &[0x04, 0x02]).is_err() {
+        log::warn!("FUSB 0x22 (p7) gmask failed");
+    }
+    if i2c.write(0x22u8, &[0x0A, 0xFF]).is_err() {
+        log::warn!("FUSB 0x22 (p7) mask failed");
+    }
+    if i2c.write(0x22u8, &[0x0E, 0xFF]).is_err() {
+        log::warn!("FUSB 0x22 (p7) maskA failed");
+    }
+    if i2c.write(0x22u8, &[0x0F, 0xFF]).is_err() {
+        log::warn!("FUSB 0x22 (p7) maskB failed");
+    }
+    if i2c.write_read(0x22u8, &[0x3E], &mut dummy).is_err() {
+        log::warn!("FUSB 0x22 (p7) clear INTAB failed");
+    }
+    if i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]).is_err() {
+        log::warn!("FUSB 0x22 (p7) clear INT failed");
+    }
 
     // Full init for 0x58 and 0x59 (safe: no USB-sensitive pins on these chips)
     for addr in [0x58u8, 0x59u8] {
-        if i2c.write(addr, &[0x7F, 0x00]).is_err() { log::warn!("0x{:02x} reset failed", addr); } // Soft reset
+        if i2c.write(addr, &[0x7F, 0x00]).is_err() {
+            log::warn!("0x{:02x} reset failed", addr);
+        } // Soft reset
         delay.delay_millis(2);
-        if i2c.write(addr, &[0x06, 0xFF, 0xFF]).is_err() { log::warn!("0x{:02x} mask failed", addr); } // Mask all interrupts (P0 & P1)
-        if i2c.write(addr, &[0x04, 0xFF, 0xFF]).is_err() { log::warn!("0x{:02x} dir failed", addr); }  // All pins as inputs
-        if i2c.write(addr, &[0x11, 0x10]).is_err() { log::warn!("0x{:02x} GCR failed", addr); }      // GCR: push-pull mode
+        if i2c.write(addr, &[0x06, 0xFF, 0xFF]).is_err() {
+            log::warn!("0x{:02x} mask failed", addr);
+        } // Mask all interrupts (P0 & P1)
+        if i2c.write(addr, &[0x04, 0xFF, 0xFF]).is_err() {
+            log::warn!("0x{:02x} dir failed", addr);
+        } // All pins as inputs
+        if i2c.write(addr, &[0x11, 0x10]).is_err() {
+            log::warn!("0x{:02x} GCR failed", addr);
+        } // GCR: push-pull mode
     }
 
     // Additional 0x5a config — NO soft reset (would float pin 4 and break USB!)
     // Output and direction registers were already set early above to secure the USB mux.
-    if i2c.write(0x5au8, &[0x06, 0xFF, 0xFF]).is_err() { log::warn!("0x5a mask failed"); } // Mask interrupts
-    if i2c.write(0x5au8, &[0x11, 0x10]).is_err() { log::warn!("0x5a GCR failed"); }      // GCR: push-pull mode
+    if i2c.write(0x5au8, &[0x06, 0xFF, 0xFF]).is_err() {
+        log::warn!("0x5a mask failed");
+    } // Mask interrupts
+    if i2c.write(0x5au8, &[0x11, 0x10]).is_err() {
+        log::warn!("0x5a GCR failed");
+    } // GCR: push-pull mode
     delay.delay_millis(2);
 
     // Enable LED power: 0x5a pin 2 HIGH (5V supply for NeoPixels)
@@ -207,14 +263,24 @@ async fn main(spawner: Spawner) {
         let mut dummy = [0u8; 1];
         // AW9523B: read Port 0 and Port 1 from all three chips
         for addr in [0x58u8, 0x59u8, 0x5au8] {
-            let _ = i2c.write_read(addr, &[0x00], &mut dummy);
-            let _ = i2c.write_read(addr, &[0x01], &mut dummy);
+            if i2c.write_read(addr, &[0x00], &mut dummy).is_err() {
+                log::warn!("0x{:02x} clear P0 failed", addr);
+            }
+            if i2c.write_read(addr, &[0x01], &mut dummy).is_err() {
+                log::warn!("0x{:02x} clear P1 failed", addr);
+            }
         }
         // FUSB302B: read interrupt and status registers (registers 0x3E, 0x42, 0x40)
         let mut fus2 = [0u8; 2];
-        let _ = i2c.write_read(0x22u8, &[0x3E], &mut fus2); // InterruptA + InterruptB
-        let _ = i2c.write_read(0x22u8, &[0x42], &mut fus2[..1]); // Interrupt
-        let _ = i2c.write_read(0x22u8, &[0x40], &mut fus2[..1]); // Status0
+        if i2c.write_read(0x22u8, &[0x3E], &mut fus2).is_err() {
+            log::warn!("FUSB 0x22 clear INTAB failed");
+        }
+        if i2c.write_read(0x22u8, &[0x42], &mut fus2[..1]).is_err() {
+            log::warn!("FUSB 0x22 clear INT failed");
+        }
+        if i2c.write_read(0x22u8, &[0x40], &mut fus2[..1]).is_err() {
+            log::warn!("FUSB 0x22 clear STATUS failed");
+        }
     }
 
     // GPIO10 is the shared interrupt line for all six buttons (active-low,
@@ -311,32 +377,60 @@ async fn main(spawner: Spawner) {
         let mut dummy = [0u8; 2];
 
         // 1. Check chips on Port 7 (System)
-        let _ = i2c.write(0x77u8, &[1 << 7]);
-        if button_int.is_low() {
-            let _ = i2c.write_read(0x58u8, &[0x00], &mut port0_58);
-            let _ = i2c.write_read(0x58u8, &[0x01], &mut port0_58);
+        if i2c.write(0x77u8, &[1 << 7]).is_err() {
+            log::warn!("Mux port 7 select failed");
         }
         if button_int.is_low() {
-            let _ = i2c.write_read(0x59u8, &[0x00], &mut port0_59);
-            let _ = i2c.write_read(0x59u8, &[0x01], &mut port1_59);
+            if i2c.write_read(0x58u8, &[0x00], &mut port0_58).is_err() {
+                log::warn!("0x58 clear P0 failed");
+            }
+            if i2c.write_read(0x58u8, &[0x01], &mut port0_58).is_err() {
+                log::warn!("0x58 clear P1 failed");
+            }
         }
         if button_int.is_low() {
-            let _ = i2c.write_read(0x5au8, &[0x00], &mut port0_5a);
-            let _ = i2c.write_read(0x5au8, &[0x01], &mut port1_5a);
+            if i2c.write_read(0x59u8, &[0x00], &mut port0_59).is_err() {
+                log::warn!("0x59 clear P0 failed");
+            }
+            if i2c.write_read(0x59u8, &[0x01], &mut port1_59).is_err() {
+                log::warn!("0x59 clear P1 failed");
+            }
         }
         if button_int.is_low() {
-            let _ = i2c.write_read(0x6Au8, &[0x0B], &mut dummy); // BQ PMIC
-            let _ = i2c.write_read(0x22u8, &[0x3E], &mut dummy); // FUSB Port 7
-            let _ = i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]);
+            if i2c.write_read(0x5au8, &[0x00], &mut port0_5a).is_err() {
+                log::warn!("0x5a clear P0 failed");
+            }
+            if i2c.write_read(0x5au8, &[0x01], &mut port1_5a).is_err() {
+                log::warn!("0x5a clear P1 failed");
+            }
+        }
+        if button_int.is_low() {
+            if i2c.write_read(0x6Au8, &[0x0B], &mut dummy).is_err() {
+                log::warn!("BQ25895 clear INT failed");
+            }
+            if i2c.write_read(0x22u8, &[0x3E], &mut dummy).is_err() {
+                log::warn!("FUSB (p7) clear INTAB failed");
+            }
+            if i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]).is_err() {
+                log::warn!("FUSB (p7) clear INT failed");
+            }
         }
 
         // 2. Check chips on Port 0 (USB Out)
         if button_int.is_low() {
-            let _ = i2c.write(0x77u8, &[1 << 0]);
-            let _ = i2c.write_read(0x22u8, &[0x3E], &mut dummy); // FUSB Port 0
-            let _ = i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]);
+            if i2c.write(0x77u8, &[1 << 0]).is_err() {
+                log::warn!("Mux port 0 select failed");
+            }
+            if i2c.write_read(0x22u8, &[0x3E], &mut dummy).is_err() {
+                log::warn!("FUSB (p0) clear INTAB failed");
+            }
+            if i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]).is_err() {
+                log::warn!("FUSB (p0) clear INT failed");
+            }
             // Return to Port 7 for next loop
-            let _ = i2c.write(0x77u8, &[1 << 7]);
+            if i2c.write(0x77u8, &[1 << 7]).is_err() {
+                log::warn!("Mux port 7 return failed");
+            }
         }
 
         // XOR against last state to detect transitions.
@@ -344,7 +438,9 @@ async fn main(spawner: Spawner) {
         let pressed_59 = !port0_59[0] & changed_59;
         if pressed_59 & (1 << 0) != 0 {
             esp_println::println!("[BUTTON] Button C (CONFIRM) pressed!");
-            let _ = channel.sender().try_send(());
+            if channel.sender().try_send(()).is_err() {
+                log::warn!("Button channel full, event dropped");
+            }
         }
         if pressed_59 & (1 << 1) != 0 {
             esp_println::println!("[BUTTON] Button D (DOWN) pressed!");
