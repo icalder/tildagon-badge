@@ -8,14 +8,14 @@
 //!   reads I2C expanders to identify which button changed, sends to tasks
 //! - button_monitor task: Awaits button press signal
 //! - blinky task: Runs LED animation when triggered
-//! - Communication: embassy-sync channels (event-driven)
+//! - Communication: embassy-sync PubSubChannel (broadcast events)
 
 #![no_std]
 #![no_main]
 
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
+use embassy_sync::pubsub::{PubSubChannel, Subscriber};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
@@ -43,14 +43,12 @@ async fn run() {
 const NUM_LEDS: usize = 19;
 
 #[embassy_executor::task]
-async fn button_monitor(
-    rx: embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, (), 1>,
-) {
+async fn button_monitor(mut sub: Subscriber<'static, CriticalSectionRawMutex, (), 1, 2, 1>) {
     esp_println::println!("[BUTTON_MONITOR] Ready, awaiting button press...");
 
     // Wait for real button press signal from main loop
     loop {
-        rx.receive().await;
+        sub.next_message_pure().await;
         esp_println::println!("[BUTTON_MONITOR] Button C (CONFIRM) pressed!");
     }
 }
@@ -58,13 +56,13 @@ async fn button_monitor(
 #[embassy_executor::task]
 async fn blinky(
     mut led: SmartLedsAdapterAsync<'static, { buffer_size_async(NUM_LEDS) }>,
-    rx: embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, (), 1>,
+    mut sub: Subscriber<'static, CriticalSectionRawMutex, (), 1, 2, 1>,
 ) {
     esp_println::println!("[BLINKY] Waiting for button C (CONFIRM) press to start animation...");
 
     loop {
         // This awaits until button_monitor sends an event - no polling, no busy loop
-        rx.receive().await;
+        sub.next_message_pure().await;
 
         esp_println::println!("[BLINKY] Starting LED animation...");
         let colors = [RED, GREEN, BLUE, YELLOW, MAGENTA, CYAN, WHITE];
@@ -315,13 +313,16 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(run()).ok();
 
-    // Create channel for button press detection
-    static BUTTON_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, (), 1>> = StaticCell::new();
-    let channel = BUTTON_CHANNEL.init(Channel::new());
+    // Create channel for button press detection (broadcast to multiple tasks)
+    // PubSubChannel: capacity=1, subscribers=2, publishers=1
+    static BUTTON_CHANNEL: StaticCell<PubSubChannel<CriticalSectionRawMutex, (), 1, 2, 1>> =
+        StaticCell::new();
+    let channel = BUTTON_CHANNEL.init(PubSubChannel::new());
 
     // Spawn button monitor - awaits real button presses
-    // TODO: use a PubSubChannel so all consumers get each event
-    // spawner.spawn(button_monitor(channel.receiver())).ok();
+    spawner
+        .spawn(button_monitor(channel.subscriber().unwrap()))
+        .ok();
 
     // NOW set up LED hardware and spawn blinky
     let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))
@@ -336,8 +337,10 @@ async fn main(spawner: Spawner) {
 
     let led = SmartLedsAdapterAsync::new(rmt_channel, peripherals.GPIO21, rmt_buffer);
 
-    // Spawn blinky - awaits button press from button_monitor
-    spawner.spawn(blinky(led, channel.receiver())).ok();
+    // Spawn blinky - also awaits button press from the same channel
+    spawner
+        .spawn(blinky(led, channel.subscriber().unwrap()))
+        .ok();
 
     esp_println::println!(
         "[BUTTON] GPIO10 initial level: {} (expect High)",
@@ -348,6 +351,8 @@ async fn main(spawner: Spawner) {
     // to identify which button(s) changed state.
     let mut last_state_59: u8 = 0xFF;
     let mut last_state_5a: u8 = 0xFF;
+    let publisher = channel.publisher().unwrap();
+
     esp_println::println!("[BUTTON] Entering main loop, waiting for falling edge...");
     loop {
         button_int.wait_for_falling_edge().await;
@@ -438,9 +443,8 @@ async fn main(spawner: Spawner) {
         let pressed_59 = !port0_59[0] & changed_59;
         if pressed_59 & (1 << 0) != 0 {
             esp_println::println!("[BUTTON] Button C (CONFIRM) pressed!");
-            if channel.sender().try_send(()).is_err() {
-                log::warn!("Button channel full, event dropped");
-            }
+            // Use immediate publish so we don't block the interrupt loop
+            publisher.publish_immediate(());
         }
         if pressed_59 & (1 << 1) != 0 {
             esp_println::println!("[BUTTON] Button D (DOWN) pressed!");
