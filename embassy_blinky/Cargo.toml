@@ -17,6 +17,7 @@ log = "0.4"
 smart-leds = "0.4.0"
 esp-hal-smartled = "0.17.0"
 static_cell = "2.1.0"
+tildagon = { path = "../tildagon" }
 
 [features]
 # Sets the default chip for less noisy `cargo build`, `rust-analyzer` etc.
