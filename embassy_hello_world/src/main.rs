@@ -204,17 +204,6 @@ async fn main(spawner: Spawner) {
             log::warn!("0x{:02x} GCR failed: {:?}", addr, e);
         }
         delay.delay_millis(5);
-        // 5. Clear LED dimming registers for all 16 pins
-        if let Err(e) = i2c.write(
-            addr,
-            &[
-                0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00,
-            ],
-        ) {
-            log::warn!("0x{:02x} LED dimming clear failed: {:?}", addr, e);
-        }
-        delay.delay_millis(5);
     }
 
     // Additional 0x5a config — NO soft reset (would float pin 4 and break USB!)
@@ -228,16 +217,6 @@ async fn main(spawner: Spawner) {
     delay.delay_millis(5);
     if let Err(e) = i2c.write(0x5au8, &[0x11, 0x10]) {
         log::warn!("0x5a GCR failed: {:?}", e);
-    }
-    delay.delay_millis(5);
-    if let Err(e) = i2c.write(
-        0x5au8,
-        &[
-            0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00,
-        ],
-    ) {
-        log::warn!("0x5a LED dimming clear failed: {:?}", e);
     }
     delay.delay_millis(5);
 
