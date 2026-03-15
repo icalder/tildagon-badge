@@ -1,0 +1,42 @@
+as admin:
+
+usbipd.exe list
+12-2   303a:1001  USB Serial Device (COM3), USB JTAG/serial debug unit          Not shared
+usbipd bind --busid 12-2
+usbipd attach --wsl --busid 12-2
+...
+usbipd detach --busid <BUSID>
+
+# Note
+ - need to enable bwrap suid in nixos configuration
+ - bwrap example:
+
+ bwrap \
+  --ro-bind /nix /nix \
+  --proc /proc \
+  --dev /dev \
+  --tmpfs /tmp \
+  --unshare-all \
+  --setenv PATH "/run/current-system/sw/bin" \
+  --ro-bind /run/current-system/sw/bin /run/current-system/sw/bin \
+  $(readlink -f $(which bash))
+
+
+For the flake we use: https://github.com/michalrus/esp-rust-nix-sandbox
+
+cd embassy_hello_world
+cargo build --release
+cargo doc --release --open
+espflash save-image --chip esp32 target/xtensa-esp32-none-elf/release/embassy-hello-world out.bin
+
+To flash, and monitor output:
+  • cargo espflash flash --monitor --features esp32 --target xtensa-esp32-none-elf --release
+  • cargo run --release (alias of ^)
+  • picocom --baud=115200 --imap lfcrlf /dev/ttyUSB0
+
+
+
+@embassy_hello_world/src/main.rs is meant to be illuminating the smart leds on the EMF Camp tildagon badge. but it
+   is not working, currently not even compiling. i want you to seach the official firmware source code from
+   badge-2024-software/ for all information regarding how to drive the LEDs. create @HARDWARE.md and we will start to
+   document the hardware in a rust-friendly way, beginning with the LED susbsystem  

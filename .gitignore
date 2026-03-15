@@ -1,0 +1,10 @@
+.DS_Store
+.idea
+*.log
+tmp/
+result
+target/
+flycheck_*
+.direnv/
+out.bin
+badge-2024-software

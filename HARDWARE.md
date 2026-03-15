@@ -1,0 +1,199 @@
+# Tildagon Badge Hardware
+
+This document records the hardware details of the Tildagon badge, focusing on what's needed for Rust firmware development with Embassy.
+
+## LED Subsystem
+
+The Tildagon badge has 19 individually addressable RGB LEDs (Neopixels/WS2812).
+
+- **Data Pin:** The LEDs are controlled via `GPIO21` using `esp-hal-smartled`.
+- **Number of LEDs:** 19 in a chain.
+- **Power Control:** Controlled by pin 2 of the AW9523B at `0x5a` (see below).
+- **⚠️ Embassy / async:** Use `SmartLedsAdapterAsync` (not `SmartLedsAdapter`). The blocking adapter refills the ESP32-S3 RMT hardware RAM (~96 entries) via interrupts, which conflict with Embassy's scheduler and cause `TransmissionError` for chains longer than ~4 LEDs. The async adapter sends one LED at a time, fitting within the hardware RAM. Use `buffer_size_async(NUM_LEDS)` for the buffer size constant.
+
+## I2C Bus
+
+The badge has a primary I2C bus used for controlling various peripherals.
+
+- **Pins:**
+    - `SDA`: `GPIO45`
+    - `SCL`: `GPIO46`
+- **Reset Pin:** `GPIO9` is used to enable/reset I2C peripherals. It should be set to `High`.
+- **I2C Mux:**
+    - **Address:** `0x77`
+    - **System Bus Channel:** Channel 7. To communicate with the onboard peripherals, you must first write `1 << 7` to the mux.
+
+## I/O Expanders (AW9523B)
+
+There are three `AW9523B` I/O expander chips on the system I2C bus. These are used for driving LEDs, reading buttons, and controlling hexpansion ports.
+
+- **Addresses:** `0x58`, `0x59`, `0x5a`.
+- **LED Power Pin:** The power for the 19 Neopixel LEDs is controlled by **pin 2** of the `AW9523B` at address **`0x5a`**. This pin must be configured as an output and driven `high` to enable the LEDs.
+
+### ⚠️ CRITICAL: USB Serial Communication Issue with 0x5a
+
+**The Issue:** Initializing the AW9523B at address `0x5a` can break USB serial communication during firmware startup.
+
+**Root Cause:** The AW9523B soft reset command (register `0x7F`) returns all pins to high-impedance (input) state momentarily. Pin 4 of `0x5a` controls the **USB mux** — while it is floating/high-Z, the USB mux routes USB away from the ESP32, causing the host to drop the serial connection permanently.
+
+**Pin map for `0x5a` (from official firmware source `tildagon_pin.c`):**
+- **Pin 2** = 5V supply switch / LED power (`EPIN_LED_POWER = (2, 2)` in Python)
+- **Pin 4** = USB mux select (LOW = USB to ESP32, HIGH = USB to hexpansion)
+- **Pin 5** = secondary LED switch
+
+**The Fix:** Do **not** soft-reset `0x5a`. Instead, write the output register **before** the direction register so that when pin 4 becomes an output, it immediately drives LOW. This must happen as early as possible after I2C is up — before the USB host times out.
+
+```rust
+// Enable mux channel 7, then immediately configure 0x5a pin 4 LOW:
+let _ = i2c.write(0x77u8, &[1 << 7]);
+// Write output register first (pin 4 will be LOW when direction changes)
+let _ = i2c.write(0x5au8, &[0x02, 0x00]);
+// Set pins 2, 4, 5 as outputs, rest as inputs (~(1<<2|1<<4|1<<5) = 0xCB)
+let _ = i2c.write(0x5au8, &[0x04, 0xCB, 0xFF]);
+// Pin 4 is now output LOW — USB routes to ESP32.
+```
+
+After this, init `0x58` and `0x59` normally (soft reset is safe on those). Then configure `0x5a` further **without** the soft reset step, and enable LED power (pin 2 HIGH).
+
+**What NOT to do:**
+- ❌ Do not write `[0x7F, 0x00]` to `0x5a` — this floats pin 4 and kills USB
+- ❌ Do not add long delays (100ms+) after GPIO9 goes HIGH before writing to `0x5a`
+
+### AW9523B Initialization Sequence
+
+For proper operation, each AW9523B chip must be initialized with the following register writes (in order):
+
+1. **Reset:** Write `0x00` to register `0x7F` (chip reset)
+2. **Interrupt Disable (Port 0 & 1):** Write `0xFF, 0xFF` to register `0x06` (disables all interrupts; bit = 1 means disabled)
+3. **Direction (Port 0 & 1):** Write `0xFF, 0xFF` to register `0x04` (sets all pins as inputs - counter-intuitive but required for proper GPIO operation)
+4. **Control Register (GCR):** Write `0x10` to register `0x11` (configures global control settings)
+5. **Interrupt Mask (All 16 pins):** Write `0x00` × 16 to register `0x20` (clears interrupt masks for all pins)
+
+After this initialization, individual pins can be:
+- Read from register `0x00` (Port 0) or `0x01` (Port 1) for input state
+- Written to register `0x02` (Port 0) or `0x03` (Port 1) for output state
+- Set direction with register `0x04` (Port 0) or `0x05` (Port 1) where `0x00` = output, `0xFF` = input
+
+## Power & USB-C Management
+
+The badge features two USB-C PD controllers and a dedicated battery management IC. All three of these devices share the `GPIO10` interrupt line.
+
+### USB-C PD Controllers (FUSB302B)
+
+- **Address:** `0x22`
+- **Location 1 (usb_in):** Mux Channel 7. Handles power input and negotiation with the host/charger.
+- **Location 2 (usb_out):** Mux Channel 0. Handles power delivery to hexpansions.
+- **Interrupts:** Without initialization, these chips often assert `GPIO10` continuously due to CC pin state changes or internal events. To silence them in "Hello World" style firmware:
+    - Perform a soft reset (Write `0x01` to reg `0x0C`).
+    - Power off the oscillator (Write `0x00` to reg `0x0B`).
+    - Mask all interrupts (Registers `0x0A`, `0x0E`, `0x0F`).
+
+### Battery Management IC (BQ25895)
+
+- **Address:** `0x6A`
+- **Location:** Mux Channel 7.
+- **Functions:** Handles battery charging, VBUS/VBAT ADC measurements, and 5V boost for hexpansions.
+- **Watchdog:** The chip has a hardware watchdog that asserts an interrupt every few seconds if not petted or disabled.
+- **Silence Procedure:** 
+    - Reset (Write `0x80` to reg `0x14`).
+    - Disable Watchdog and set ADC to one-shot (Write `0x8C` to reg `0x07` and `0x00` to reg `0x02`).
+
+## Buttons
+
+The Tildagon badge has **six buttons arranged around the hexagon shape**, connected via the AW9523B I/O expanders at addresses `0x59` and `0x5a`. These buttons provide user input for applications.
+
+### Button Layout and Hardware Mapping
+
+| Button | Position | Name | GPIO (Chip, Pin) | I2C Expander | Port | Function |
+|--------|----------|------|------------------|--------------|------|----------|
+| A | Top | UP | (2, 6) | `0x5a` | 0 | Navigate up / Pan up |
+| B | Top-Right | RIGHT | (2, 7) | `0x5a` | 0 | Navigate right / Pan right |
+| C | Bottom-Right | CONFIRM | (1, 0) | `0x59` | 0 | Confirm selection / Execute action |
+| D | Bottom | DOWN | (1, 1) | `0x59` | 0 | Navigate down / Pan down |
+| E | Bottom-Left | LEFT | (1, 2) | `0x59` | 0 | Navigate left / Pan left |
+| F | Top-Left | CANCEL | (1, 3) | `0x59` | 0 | Go back / Exit application |
+
+**GPIO Notation:** `(chip, pin)` where:
+- Chip `0` = `AW9523B` at I2C address `0x58` (hexpansion control)
+- Chip `1` = `AW9523B` at I2C address `0x59` (buttons D, E, F and hexpansion ports 4-6)
+- Chip `2` = `AW9523B` at I2C address `0x5a` (buttons A, B and hexpansion ports 1-3)
+
+**All button pins are on Port 0** of their respective expanders, with active-low logic (0 = pressed, 1 = released).
+
+### Button Input Detection
+
+Button states are accessed by reading the GPIO input registers of the AW9523B expanders:
+- **Port 0 Input Register:** I2C register address `0x00` on each expander
+- **Port 1 Input Register:** I2C register address `0x01` on each expander
+
+Reading these registers returns the current state of all pins on that port (1 = released/HIGH, 0 = pressed/LOW).
+
+For button detection, read register `0x00` from both `0x59` and `0x5a`:
+
+```rust
+// Read Port 0 from both expanders
+let mut port0_59 = [0u8; 1];  // Buttons C, D, E, F
+let mut port0_5a = [0u8; 1];  // Buttons A, B
+i2c.read(0x59u8, &mut port0_59)?;
+i2c.read(0x5au8, &mut port0_5a)?;
+
+let button_a_pressed = (port0_5a[0] & (1 << 6)) == 0;  // Bit 6
+let button_b_pressed = (port0_5a[0] & (1 << 7)) == 0;  // Bit 7
+let button_c_pressed = (port0_59[0] & (1 << 0)) == 0;  // Bit 0
+let button_d_pressed = (port0_59[0] & (1 << 1)) == 0;  // Bit 1
+let button_e_pressed = (port0_59[0] & (1 << 2)) == 0;  // Bit 2
+let button_f_pressed = (port0_59[0] & (1 << 3)) == 0;  // Bit 3
+```
+
+### Button Interrupt Handling
+
+The badge uses a **shared interrupt line** for all button changes:
+
+- **Interrupt GPIO:** `GPIO_NUM_10` (ESP32-S3 native GPIO)
+- **Interrupt Type:** Falling edge (`GPIO_INTR_NEGEDGE`) — triggered when any button is pressed
+- **Handling:** When GPIO 10 goes LOW, poll all three expanders (0x58, 0x59, 0x5a) via I2C to determine which button(s) changed state
+
+**Two implementation approaches:**
+
+1. **Interrupt-driven (Recommended for responsiveness):**
+   - Set up an interrupt handler on GPIO 10
+   - When triggered, read port 0 from both `0x59` and `0x5a`
+   - Compare with previous state to detect press (HIGH→LOW) or release (LOW→HIGH)
+   - Generate application events based on changes
+
+2. **Polling (Simpler for Embassy/async):**
+   - Periodically read input registers `0x00` from both `0x59` and `0x5a` (every 20-50ms)
+   - Compare with previous state to detect changes
+   - Store last state and check for transitions
+
+### Debouncing
+
+Buttons naturally have contact bounce. Recommended debounce strategies:
+
+- **Polling approach:** 20-50ms poll interval naturally debounces mechanical bounce
+- **Interrupt-driven approach:** After detecting a state change, ignore interrupts for 20ms before re-enabling to filter bounce
+- **Software debounce:** Require 2-3 consecutive reads showing the same new state before confirming a transition
+
+### Hexagon Expansion Integration
+
+The six buttons also control hexagon expansion insertion/removal detection when **held for 4+ seconds**:
+
+- **Button A (pin 6)** → Hexpansion **Port 1** insert/remove
+- **Button B (pin 7)** → Hexpansion **Port 2** insert/remove
+- **Button C (pin 0)** → Hexpansion **Port 3** insert/remove
+- **Button D (pin 1)** → Hexpansion **Port 4** insert/remove
+- **Button E (pin 2)** → Hexpansion **Port 5** insert/remove
+- **Button F (pin 3)** → Hexpansion **Port 6** insert/remove
+
+When a button is held for 4+ seconds with the "boop" pin (GPIO 0) pulled LOW:
+- After 4 seconds: Triggers a **hexpansion insertion event** on the corresponding port
+- On release: Triggers a **hexpansion removal event**
+- Normal button press/release (< 4 seconds): Standard button events only
+
+### Button Functionality Conventions
+
+While buttons can be used for any purpose, the standard conventions are:
+- **CONFIRM (C):** Primary action / select menu item
+- **CANCEL (F):** Go back / exit application
+- **UP (A) / DOWN (D):** Navigate menus / adjust values
+- **LEFT (E) / RIGHT (B):** Secondary navigation / side panels
