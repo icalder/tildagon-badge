@@ -272,36 +272,6 @@ async fn main(spawner: Spawner) {
         log::warn!("0x58 port1 int disable failed: {:?}", e);
     }
 
-    // Readback all four interrupt mask registers individually to confirm writes landed.
-    let mut r = [0u8; 1];
-    for (addr, p0_expect, p1_expect) in
-        [(0x58u8, 0xFF, 0xFF), (0x59, 0xF0, 0xFF), (0x5a, 0x3F, 0xFF)]
-    {
-        let p0 = if i2c.write_read(addr, &[0x06], &mut r).is_ok() {
-            r[0]
-        } else {
-            0xEE
-        };
-        let p1 = if i2c.write_read(addr, &[0x07], &mut r).is_ok() {
-            r[0]
-        } else {
-            0xEE
-        };
-        esp_println::println!(
-            "[INIT] 0x{:02x} int mask: port0=0x{:02X}(exp 0x{:02X}) port1=0x{:02X}(exp 0x{:02X}) {}",
-            addr,
-            p0,
-            p0_expect,
-            p1,
-            p1_expect,
-            if p0 == p0_expect && p1 == p1_expect {
-                "OK"
-            } else {
-                "MISMATCH!"
-            }
-        );
-    }
-
     // Clear ALL pending interrupts before entering the loop.
     // GPIO10 is an open-drain, wired-OR line shared by the three AW9523B expanders
     // AND the FUSB302B USB power controller (0x22). Any device with unread interrupt
