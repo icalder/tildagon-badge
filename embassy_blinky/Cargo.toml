@@ -67,12 +67,6 @@ esp32s3 = [
   "esp-hal/esp32s3",
 ]
 
-[profile.release]
-debug = true
-debug-assertions = true
-lto = "fat"
-codegen-units = 1
-
 [[bin]]
 name = "embassy_blinky"
 path = "src/main.rs"
