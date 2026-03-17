@@ -45,11 +45,11 @@ To respect the work of the community, we will **credit the upstream project** [t
     * `Leds::new(...)`
 *   [x] Treat `embassy_blinky` as the regression test for the refactor and keep it building throughout.
 
-### Phase 1: Core Foundation
-*   [ ] Port the `Port` and `Pin` types from `tildagon-rs` (with attribution).
-*   [ ] Implement the `TCA9548A` mux-aware I2C driver / `SharedI2cBus` wrapper.
-*   [ ] Create the `Resources` and `Pins` structs to map the Tildagon hardware layout.
-*   [ ] Implement the `split_resources!` macro.
+### Phase 1: Core Foundation ✅
+*   [x] Port the `Port` and `Pin` types from `tildagon-rs` (with attribution).
+*   [x] Implement the `TCA9548A` mux-aware I2C driver / `SharedI2cBus` wrapper.
+*   [x] Create the `Resources` and `Pins` structs to map the Tildagon hardware layout.
+*   [x] Implement the `split_resources!` macro.
 
 ### Phase 2: Refactor Initialization Internals Without Breaking the Public API
 *   [ ] Update `TildagonHardware::new` to use the new `Resources` system internally while preserving its current return shape and behavior.

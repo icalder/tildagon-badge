@@ -1,13 +1,17 @@
 #![no_std]
+#![feature(adt_const_params)]
 // In no_std environments, standard cargo tests try to link the 'test' crate (part of std).
 // We disable the main entry point for tests to avoid conflicts and satisfy the LSP/compiler
 // when checking the library as a test target (which the compiler treats as an executable).
 #![cfg_attr(test, no_main)]
 
-pub mod hardware;
-pub mod leds;
 pub mod buttons;
 pub mod error;
+pub mod hardware;
+pub mod i2c;
+pub mod leds;
+pub mod pins;
+pub mod resources;
 
 pub use error::Error;
 
