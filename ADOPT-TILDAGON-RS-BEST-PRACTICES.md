@@ -51,11 +51,11 @@ To respect the work of the community, we will **credit the upstream project** [t
 *   [x] Create the `Resources` and `Pins` structs to map the Tildagon hardware layout.
 *   [x] Implement the `split_resources!` macro.
 
-### Phase 2: Refactor Initialization Internals Without Breaking the Public API
-*   [ ] Update `TildagonHardware::new` to use the new `Resources` system internally while preserving its current return shape and behavior.
-*   [ ] **CRITICAL**: Preserve our "Silence Pulsing Interrupts" logic for FUSB302B and BQ25895, including the required mux channel ordering and delays.
-*   [ ] **CRITICAL**: Preserve "Secure USB Serial" logic (0x5a pin 4 LOW) early in initialization.
-*   [ ] Preserve existing initialization side effects such as LED power enable and button-expander setup.
+### Phase 2: Refactor Initialization Internals Without Breaking the Public API ✅
+*   [x] Update `TildagonHardware::new` to use the new `Resources` system internally while preserving its current return shape and behavior.
+*   [x] **CRITICAL**: Preserve our "Silence Pulsing Interrupts" logic for FUSB302B and BQ25895, including the required mux channel ordering and delays.
+*   [x] **CRITICAL**: Preserve "Secure USB Serial" logic (0x5a pin 4 LOW) early in initialization.
+*   [x] Preserve existing initialization side effects such as LED power enable and button-expander setup.
 
 ### Phase 3: Add New APIs Alongside Existing Ones
 *   [ ] **Buttons**: Add typed-pin- and mux-aware internals first, but keep `Buttons::wait_for_press()` working unchanged for existing callers.

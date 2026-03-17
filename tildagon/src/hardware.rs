@@ -34,12 +34,13 @@ impl TildagonHardware {
     ///
     /// Performs, in order:
     /// 1. Embassy/timer setup via `esp_rtos::start`.
-    /// 2. I2C bus init (SDA=GPIO45, SCL=GPIO46).
-    /// 3. **Secure USB Serial** — drives 0x5a pin 4 LOW immediately.
-    /// 4. **Silence pulsing interrupts** — configures FUSB302B (mux port 0) and
+    /// 2. Peripherals are split into typed resource groups via [`split_resources!`].
+    /// 3. I2C bus init (SDA=GPIO45, SCL=GPIO46) using [`crate::resources::I2cResources`].
+    /// 4. **Secure USB Serial** — drives 0x5a pin 4 LOW immediately.
+    /// 5. **Silence pulsing interrupts** — configures FUSB302B (mux port 0) and
     ///    BQ25895 + FUSB302B (mux port 7) so they stop toggling the INT line.
-    /// 5. Button-expander setup (0x58, 0x59, 0x5a) and LED-power enable.
-    /// 6. Clears all pending interrupts, then re-enables button interrupts.
+    /// 6. Button-expander setup (0x58, 0x59, 0x5a) and LED-power enable.
+    /// 7. Clears all pending interrupts, then re-enables button interrupts.
     ///
     /// # Compatibility Baseline (Phase 0)
     /// This signature (`async fn new(Peripherals) -> Result<Self, Error>`) is
@@ -51,6 +52,8 @@ impl TildagonHardware {
         esp_println::logger::init_logger_from_env();
         let delay = Delay::new();
 
+        // Move TIMG0 and SW_INTERRUPT out before the resource split so they
+        // remain accessible as bare fields on the partially-moved `peripherals`.
         let timg0 = TimerGroup::new(peripherals.TIMG0);
         esp_rtos::start(
             timg0.timer0,
@@ -58,14 +61,36 @@ impl TildagonHardware {
             esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT),
         );
 
+        // Split peripherals into typed resource groups by constructing the resource
+        // structs directly. This is equivalent to calling `split_resources!(peripherals)`
+        // from downstream code, but avoids the path-resolution restriction on
+        // macro-expanded #[macro_export] macros within the same crate.
+        //
+        // Attribution: resource-splitting pattern from tildagon-rs by Dan Nixon
+        // (https://github.com/DanNixon/tildagon-rs).
+        let i2c_res = crate::resources::I2cResources {
+            sda:   peripherals.GPIO45,
+            scl:   peripherals.GPIO46,
+            i2c:   peripherals.I2C0,
+            reset: peripherals.GPIO9,
+        };
+        let system_res = crate::resources::SystemResources {
+            int: peripherals.GPIO10,
+        };
+        let led_res = crate::resources::LedResources {
+            data: peripherals.GPIO21,
+            rmt:  peripherals.RMT,
+        };
+
         // Tildagon Badge I2C Reset/Enable Pin (GPIO 9) - releases expanders from reset.
-        let _i2c_reset = Output::new(peripherals.GPIO9, Level::High, OutputConfig::default());
+        // _i2c_reset is kept alive until end of fn to hold the pin HIGH throughout init.
+        let _i2c_reset = Output::new(i2c_res.reset, Level::High, OutputConfig::default());
         delay.delay_millis(5);
 
         // Tildagon Badge I2C initialization (SDA=GPIO45, SCL=GPIO46)
-        let mut i2c = I2c::new(peripherals.I2C0, I2cConfig::default())?
-            .with_sda(peripherals.GPIO45)
-            .with_scl(peripherals.GPIO46);
+        let mut i2c = I2c::new(i2c_res.i2c, I2cConfig::default())?
+            .with_sda(i2c_res.sda)
+            .with_scl(i2c_res.scl);
 
         // Enable I2C Mux Channel 7 (System Bus)
         i2c.write(0x77u8, &[1 << 7])?;
@@ -143,7 +168,7 @@ impl TildagonHardware {
         }
 
         let button_int = Input::new(
-            peripherals.GPIO10,
+            system_res.int,
             InputConfig::default().with_pull(Pull::Up),
         );
 
@@ -155,8 +180,8 @@ impl TildagonHardware {
         Ok(Self {
             i2c,
             button_int,
-            rmt: peripherals.RMT,
-            led_pin: peripherals.GPIO21,
+            rmt: led_res.rmt,
+            led_pin: led_res.data,
         })
     }
 }
