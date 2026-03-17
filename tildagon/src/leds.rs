@@ -9,11 +9,24 @@ use crate::Error;
 pub const NUM_LEDS: usize = 19;
 const BUFFER_SIZE: usize = buffer_size_async(NUM_LEDS);
 
+/// WS2812B LED ring driver using the ESP32-S3 RMT peripheral.
+///
+/// # Compatibility Baseline (Phase 0)
+/// [`Leds::new`], [`Leds::write`], and [`Leds::clear`] are the stable surface
+/// consumed by `embassy_blinky`. The constructor takes ownership of `RMT` and
+/// `GPIO21` directly from `TildagonHardware` and must keep that shape through
+/// Phases 1-3.
 pub struct Leds {
     adapter: SmartLedsAdapterAsync<'static, BUFFER_SIZE>,
 }
 
 impl Leds {
+    /// Initialise the RMT-backed LED adapter.
+    ///
+    /// Takes ownership of `RMT<'static>` and `GPIO21<'static>` (obtained from
+    /// [`TildagonHardware`](crate::hardware::TildagonHardware)'s fields).
+    ///
+    /// # Compatibility Baseline (Phase 0)
     pub fn new(rmt_peripheral: RMT<'static>, led_pin: GPIO21<'static>) -> Self {
         let rmt = Rmt::new(rmt_peripheral, Rate::from_mhz(80))
             .unwrap()
@@ -28,6 +41,9 @@ impl Leds {
         Self { adapter }
     }
 
+    /// Write a sequence of RGB values to all LEDs.
+    ///
+    /// # Compatibility Baseline (Phase 0)
     pub async fn write<I>(&mut self, iterator: I) -> Result<(), Error>
     where
         I: Iterator<Item = smart_leds::RGB8>,
@@ -35,6 +51,9 @@ impl Leds {
         self.adapter.write(iterator).await.map_err(Error::Leds)
     }
 
+    /// Turn all LEDs off.
+    ///
+    /// # Compatibility Baseline (Phase 0)
     pub async fn clear(&mut self) -> Result<(), Error> {
         let black = [colors::BLACK; NUM_LEDS];
         self.write(black.iter().cloned()).await

@@ -4,17 +4,31 @@ use esp_hal::Blocking;
 use embassy_time::{Duration, Timer};
 use crate::Error;
 
+/// A button press on the Tildagon badge hex-pad.
+///
+/// # Compatibility Baseline (Phase 0)
+/// All six variants are part of the stable surface consumed by `embassy_blinky`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
     A, B, C, D, E, F
 }
 
+/// Interrupt-driven button reader.
+///
+/// # Compatibility Baseline (Phase 0)
+/// [`Buttons::new`] and [`Buttons::wait_for_press`] are the stable entry points
+/// consumed by `embassy_blinky`. They must keep the same signatures through
+/// Phases 1-3. An interrupt-driven async event API will be added as an
+/// *additive* API in Phase 3, not as a replacement.
 pub struct Buttons {
     last_state_59: u8,
     last_state_5a: u8,
 }
 
 impl Buttons {
+    /// Create a new `Buttons` with no remembered state.
+    ///
+    /// # Compatibility Baseline (Phase 0)
     pub fn new() -> Self {
         Self {
             last_state_59: 0xFF,
@@ -22,6 +36,15 @@ impl Buttons {
         }
     }
 
+    /// Block until a button is pressed and return which one.
+    ///
+    /// Waits for a falling edge on the shared INT line, debounces it, then
+    /// reads the AW9523B expanders (0x59, 0x5a) via the mux to determine
+    /// which button changed. Also clears FUSB302B and BQ25895 interrupt
+    /// sources so the INT line can de-assert.
+    ///
+    /// # Compatibility Baseline (Phase 0)
+    /// This signature must remain stable through Phases 1-3.
     pub async fn wait_for_press(
         &mut self,
         i2c: &mut I2c<'_, Blocking>,

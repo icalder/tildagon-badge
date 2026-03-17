@@ -7,6 +7,21 @@ use esp_hal::Blocking;
 use embassy_time::{Duration, Timer};
 use crate::Error;
 
+/// Central hardware handle for the Tildagon badge.
+///
+/// # Compatibility Baseline (Phase 0)
+///
+/// The following public fields and constructor are the stable integration surface
+/// used by `embassy_blinky`. They **must not change shape** during the refactor
+/// (Phases 1-3). New APIs may be added alongside them, but these entry points
+/// must keep compiling and behaving identically until Phase 4 opts into migration.
+///
+/// Stable surface:
+/// - [`TildagonHardware::new`]
+/// - [`TildagonHardware::i2c`]
+/// - [`TildagonHardware::button_int`]
+/// - [`TildagonHardware::rmt`]
+/// - [`TildagonHardware::led_pin`]
 pub struct TildagonHardware {
     pub i2c: I2c<'static, Blocking>,
     pub button_int: Input<'static>,
@@ -15,6 +30,21 @@ pub struct TildagonHardware {
 }
 
 impl TildagonHardware {
+    /// Initialise all Tildagon badge hardware.
+    ///
+    /// Performs, in order:
+    /// 1. Embassy/timer setup via `esp_rtos::start`.
+    /// 2. I2C bus init (SDA=GPIO45, SCL=GPIO46).
+    /// 3. **Secure USB Serial** — drives 0x5a pin 4 LOW immediately.
+    /// 4. **Silence pulsing interrupts** — configures FUSB302B (mux port 0) and
+    ///    BQ25895 + FUSB302B (mux port 7) so they stop toggling the INT line.
+    /// 5. Button-expander setup (0x58, 0x59, 0x5a) and LED-power enable.
+    /// 6. Clears all pending interrupts, then re-enables button interrupts.
+    ///
+    /// # Compatibility Baseline (Phase 0)
+    /// This signature (`async fn new(Peripherals) -> Result<Self, Error>`) is
+    /// the stable entry point consumed by `embassy_blinky::main`. It must not
+    /// change until Phase 4.
     pub async fn new(
         peripherals: esp_hal::peripherals::Peripherals,
     ) -> Result<Self, Error> {
