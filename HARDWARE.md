@@ -23,6 +23,60 @@ The badge has a primary I2C bus used for controlling various peripherals.
     - **Address:** `0x77`
     - **System Bus Channel:** Channel 7. To communicate with the onboard peripherals, you must first write `1 << 7` to the mux.
 
+### How I2C, the mux, devices, and "pins" fit together
+
+`I2C` is a **serial communication bus**, not a bundle of per-signal GPIO wires. The ESP32-S3 talks over the shared `SDA`/`SCL` lines to multiple chips, each identified by an I2C address such as `0x5a` or `0x6a`.
+
+Those chips are not all the same kind of thing:
+
+- Some are normal peripheral ICs, like the `BQ25895` charger at `0x6a`.
+- Some are **GPIO expanders**, like the `AW9523B` chips at `0x58`, `0x59`, and `0x5a`.
+
+A GPIO expander is an I2C device that provides extra digital input/output lines. In other words, the chip itself sits on the serial I2C bus, but the chip exposes multiple logical GPIO "pins" that firmware can read or drive by accessing the chip's registers.
+
+The TCA9548A mux at `0x77` adds one more level: it selects which downstream branch of the bus is active. In Rust terms, this is why it is useful to distinguish:
+
+- a **mux port** such as `Port0` or `Port7`
+- an **I2C device address** such as `0x5a`
+- a **pin on that device** such as pin `4`
+
+So a typed pin like `Pin<0x5A, Port::Port0, 4>` means:
+
+- talk through mux channel `Port0`
+- to the I2C device at address `0x5A`
+- and use GPIO pin `4` on that device
+
+ASCII view:
+
+```text
+ESP32-S3
+  |
+  |  I2C bus (serial: SDA=GPIO45, SCL=GPIO46)
+  |
+  +--> TCA9548A mux @ 0x77
+         |
+         +--> Port 0
+         |     |
+         |     +--> FUSB302B @ 0x22
+         |
+         +--> Port 7
+               |
+               +--> AW9523B @ 0x58  --> expander pins 0..15
+               +--> AW9523B @ 0x59  --> expander pins 0..15
+               +--> AW9523B @ 0x5A  --> expander pins 0..15
+               +--> BQ25895  @ 0x6A
+               +--> FUSB302B @ 0x22
+```
+
+Concrete examples:
+
+- `0x5a` pin `2` controls LED power.
+- `0x5a` pin `4` controls the USB mux select line.
+- `0x5a` pins `6` and `7` are buttons A and B.
+- `0x59` pins `0` through `3` are buttons C through F.
+
+This is why the code often needs three pieces of information at once: **which mux channel**, **which I2C device**, and **which pin on that device**.
+
 ## I/O Expanders (AW9523B)
 
 There are three `AW9523B` I/O expander chips on the system I2C bus. These are used for driving LEDs, reading buttons, and controlling hexpansion ports.

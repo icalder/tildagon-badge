@@ -8,3 +8,4 @@ flycheck_*
 .direnv/
 out.bin
 badge-2024-software
+tildagon-rs
