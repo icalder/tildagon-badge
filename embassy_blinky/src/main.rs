@@ -90,15 +90,12 @@ async fn display_task(
     mut sub: Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 1, 3, 1>,
 ) {
     esp_println::println!("[DISPLAY] Task started");
-    
-    // Initial clear
-    display.clear(Rgb565::BLACK).unwrap();
-    
+
     let style = MonoTextStyle::new(&PROFONT_24_POINT, Rgb565::WHITE);
-    
-    Text::new("Tildagon", Point::new(60, 120), style)
-        .draw(&mut display)
-        .unwrap();
+    if let Err(e) = render_startup(&mut display, style) {
+        esp_println::println!("[DISPLAY] Startup render error: {:?}", e);
+        return;
+    }
 
     let mut next_event = None;
     loop {
@@ -107,9 +104,7 @@ async fn display_task(
         } else {
             sub.next_message_pure().await
         };
-        
-        display.clear(Rgb565::BLACK).unwrap();
-        
+
         let is_released = matches!(event, ButtonEvent::Released(_));
         let (text, pos) = match event {
             ButtonEvent::Pressed(b) => {
@@ -135,10 +130,11 @@ async fn display_task(
                 (t, get_button_pos(b))
             }
         };
-        
-        Text::new(text, pos, style)
-            .draw(&mut display)
-            .unwrap();
+
+        if let Err(e) = render_button_event(&mut display, style, text, pos) {
+            esp_println::println!("[DISPLAY] Event render error: {:?}", e);
+            continue;
+        }
 
         if is_released {
             match embassy_time::with_timeout(Duration::from_secs(1), sub.next_message_pure()).await {
@@ -146,11 +142,39 @@ async fn display_task(
                     next_event = Some(e);
                 }
                 Err(_) => {
-                    display.clear(Rgb565::BLACK).unwrap();
+                    if let Err(e) = clear_display(&mut display) {
+                        esp_println::println!("[DISPLAY] Clear error: {:?}", e);
+                    }
                 }
             }
         }
     }
+}
+
+type DisplayDrawError = <TildagonDisplay<'static> as DrawTarget>::Error;
+
+fn clear_display(display: &mut TildagonDisplay<'static>) -> Result<(), DisplayDrawError> {
+    display.clear(Rgb565::BLACK)
+}
+
+fn render_startup(
+    display: &mut TildagonDisplay<'static>,
+    style: MonoTextStyle<'static, Rgb565>,
+) -> Result<(), DisplayDrawError> {
+    clear_display(display)?;
+    Text::new("Tildagon", Point::new(60, 120), style).draw(display)?;
+    Ok(())
+}
+
+fn render_button_event(
+    display: &mut TildagonDisplay<'static>,
+    style: MonoTextStyle<'static, Rgb565>,
+    text: &str,
+    pos: Point,
+) -> Result<(), DisplayDrawError> {
+    clear_display(display)?;
+    Text::new(text, pos, style).draw(display)?;
+    Ok(())
 }
 
 fn get_button_pos(btn: Button) -> Point {
@@ -192,11 +216,16 @@ async fn main(spawner: Spawner) {
 
     static DISPLAY_BUFFER: StaticCell<[u8; 1024]> = StaticCell::new();
     let display_buffer = DISPLAY_BUFFER.init([0u8; 1024]);
-    let display = display::init(tildagon.top_board, tildagon.display, display_buffer);
-
-    spawner
-        .spawn(display_task(display, channel.subscriber().unwrap()))
-        .ok();
+    match display::init(tildagon.top_board, tildagon.display, display_buffer) {
+        Ok(display) => {
+            spawner
+                .spawn(display_task(display, channel.subscriber().unwrap()))
+                .ok();
+        }
+        Err(e) => {
+            esp_println::println!("[DISPLAY] Init error: {:?}", e);
+        }
+    }
 
     let leds = TypedLeds::new(
         tildagon.rmt,

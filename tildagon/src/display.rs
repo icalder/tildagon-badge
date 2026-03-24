@@ -17,6 +17,16 @@ use mipidsi::{
     options::{ColorInversion, ColorOrder, Orientation, Rotation},
 };
 
+/// Errors returned while bringing up the Tildagon display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayInitError {
+    DmaRxBuffer,
+    DmaTxBuffer,
+    SpiConfig,
+    SpiDevice,
+    DisplayInit,
+}
+
 /// Type alias for the Tildagon display.
 pub type TildagonDisplay<'a> = mipidsi::Display<
     SpiInterface<
@@ -36,13 +46,15 @@ pub fn init<'a>(
     top_board: TopBoardResources<'static>,
     display: DisplayResources<'static>,
     buffer: &'a mut [u8],
-) -> TildagonDisplay<'a> {
+) -> Result<TildagonDisplay<'a>, DisplayInitError> {
     // Note: dma_buffers! uses static storage internally in esp-hal to provide 'static lifetimes.
     // This means this function should only be called once to avoid aliasing static mut.
     let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = esp_hal::dma_buffers!(32000);
 
-    let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
-    let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
+    let dma_rx_buf =
+        DmaRxBuf::new(rx_descriptors, rx_buffer).map_err(|_| DisplayInitError::DmaRxBuffer)?;
+    let dma_tx_buf =
+        DmaTxBuf::new(tx_descriptors, tx_buffer).map_err(|_| DisplayInitError::DmaTxBuffer)?;
 
     let spi = Spi::new(
         display.spi,
@@ -50,14 +62,14 @@ pub fn init<'a>(
             .with_frequency(Rate::from_mhz(80))
             .with_mode(Mode::_0),
     )
-    .unwrap()
+    .map_err(|_| DisplayInitError::SpiConfig)?
     .with_sck(top_board.hs_1)
     .with_mosi(top_board.hs_2)
     .with_dma(display.dma)
     .with_buffers(dma_rx_buf, dma_tx_buf);
 
     let cs = Output::new(top_board.hs_4, Level::High, Default::default());
-    let dev = ExclusiveDevice::new_no_delay(spi, cs).unwrap();
+    let dev = ExclusiveDevice::new_no_delay(spi, cs).map_err(|_| DisplayInitError::SpiDevice)?;
 
     let dc = Output::new(top_board.hs_3, Level::High, Default::default());
     let di = SpiInterface::new(dev, dc, buffer);
@@ -68,5 +80,5 @@ pub fn init<'a>(
         .invert_colors(ColorInversion::Inverted)
         .orientation(Orientation::new().rotate(Rotation::Deg180))
         .init(&mut embassy_time::Delay)
-        .unwrap()
+        .map_err(|_| DisplayInitError::DisplayInit)
 }
