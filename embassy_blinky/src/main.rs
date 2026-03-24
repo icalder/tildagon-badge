@@ -8,14 +8,17 @@
 
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use embassy_sync::pubsub::{PubSubChannel, Subscriber};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use smart_leds::colors::*;
 use static_cell::StaticCell;
 use tildagon::hardware::TildagonHardware;
-use tildagon::leds::{Leds, NUM_LEDS};
-use tildagon::buttons::{Buttons, Button};
+use tildagon::leds::{TypedLeds, NUM_LEDS};
+use tildagon::buttons::{Button, ButtonEvent, TypedButtons};
+use tildagon::i2c::{SharedI2cBus, system_i2c_bus, top_i2c_bus};
+use tildagon::pins::Pins;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -28,26 +31,26 @@ async fn run() {
 }
 
 #[embassy_executor::task]
-async fn button_monitor(mut sub: Subscriber<'static, CriticalSectionRawMutex, Button, 1, 2, 1>) {
-    esp_println::println!("[BUTTON_MONITOR] Ready, awaiting button press...");
+async fn button_monitor(mut sub: Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 1, 2, 1>) {
+    esp_println::println!("[BUTTON_MONITOR] Ready, awaiting button events...");
 
     loop {
-        let button = sub.next_message_pure().await;
-        esp_println::println!("[BUTTON_MONITOR] Button {:?} pressed!", button);
+        let event = sub.next_message_pure().await;
+        esp_println::println!("[BUTTON_MONITOR] Event: {:?}", event);
     }
 }
 
 #[embassy_executor::task]
 async fn blinky(
-    mut leds: Leds,
-    mut sub: Subscriber<'static, CriticalSectionRawMutex, Button, 1, 2, 1>,
+    mut leds: TypedLeds<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
+    mut sub: Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 1, 2, 1>,
 ) {
-    esp_println::println!("[BLINKY] Waiting for button C (CONFIRM) press to start animation...");
+    esp_println::println!("[BLINKY] Waiting for button C press to start animation...");
 
     loop {
-        let button = sub.next_message_pure().await;
+        let event = sub.next_message_pure().await;
 
-        if button == Button::C {
+        if event == ButtonEvent::Pressed(Button::C) {
             esp_println::println!("[BLINKY] Starting LED animation...");
             let colors = [RED, GREEN, BLUE, YELLOW, MAGENTA, CYAN, WHITE];
 
@@ -79,35 +82,50 @@ async fn main(spawner: Spawner) {
     let tildagon = TildagonHardware::new(esp_hal::init(esp_hal::Config::default()))
         .await
         .expect("Tildagon hardware init failed");
-    
-    let mut i2c = tildagon.i2c;
-    let mut button_int = tildagon.button_int;
 
-    esp_println::println!("Boot: Tildagon hardware init done, USB should be stable");
+    static SHARED_I2C: StaticCell<
+        SharedI2cBus<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
+    > = StaticCell::new();
+    let shared_i2c = SHARED_I2C.init(Mutex::new(tildagon.i2c.into_async()));
+    let mut button_int = tildagon.button_int;
+    let pins = Pins::new();
+
+    esp_println::println!("Boot: Tildagon hardware init done, typed shared I2C ready");
 
     spawner.spawn(run()).ok();
 
-    static BUTTON_CHANNEL: StaticCell<PubSubChannel<CriticalSectionRawMutex, Button, 1, 2, 1>> =
-        StaticCell::new();
+    static BUTTON_CHANNEL: StaticCell<
+        PubSubChannel<CriticalSectionRawMutex, ButtonEvent, 1, 2, 1>,
+    > = StaticCell::new();
     let channel = BUTTON_CHANNEL.init(PubSubChannel::new());
 
     spawner
         .spawn(button_monitor(channel.subscriber().unwrap()))
         .ok();
 
-    let leds = Leds::new(tildagon.rmt, tildagon.led_pin);
+    let leds = TypedLeds::new(
+        tildagon.rmt,
+        tildagon.led_pin,
+        pins.led,
+        system_i2c_bus(shared_i2c),
+    )
+    .await
+    .expect("Typed LED init failed");
 
     spawner
         .spawn(blinky(leds, channel.subscriber().unwrap()))
         .ok();
 
     let publisher = channel.publisher().unwrap();
-    let mut buttons = Buttons::new();
+    let mut buttons = TypedButtons::new(
+        system_i2c_bus(shared_i2c),
+        top_i2c_bus(shared_i2c),
+    );
 
-    esp_println::println!("[BUTTON] Entering main loop, waiting for falling edge...");
+    esp_println::println!("[BUTTON] Entering main loop, waiting for button events...");
     loop {
-        match buttons.wait_for_press(&mut i2c, &mut button_int).await {
-            Ok(Some(button)) => publisher.publish_immediate(button),
+        match buttons.wait_for_event(&mut button_int).await {
+            Ok(Some(event)) => publisher.publish_immediate(event),
             Ok(None) => {}
             Err(e) => esp_println::println!("[BUTTON] Error reading buttons: {:?}", e),
         }

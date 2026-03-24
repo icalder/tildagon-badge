@@ -150,7 +150,8 @@ impl Buttons {
 /// Architecture and event-handling pattern ported from
 /// [tildagon-rs by Dan Nixon](https://github.com/DanNixon/tildagon-rs).
 pub struct TypedButtons<BUS: 'static> {
-    i2c: crate::i2c::SystemI2cBus<BUS>,
+    system_i2c: crate::i2c::SystemI2cBus<BUS>,
+    top_i2c: crate::i2c::TopBoardI2cBus<BUS>,
     last_state_59: u8,
     last_state_5a: u8,
 }
@@ -162,10 +163,15 @@ where
 {
     /// Create a new `TypedButtons` handle.
     ///
-    /// Takes ownership of a [`SystemI2cBus`](crate::i2c::SystemI2cBus) handle.
-    pub fn new(i2c: crate::i2c::SystemI2cBus<BUS>) -> Self {
+    /// Takes ownership of the system and top-board mux-aware I2C handles so it
+    /// can preserve the badge's cross-bus interrupt silencing behaviour.
+    pub fn new(
+        system_i2c: crate::i2c::SystemI2cBus<BUS>,
+        top_i2c: crate::i2c::TopBoardI2cBus<BUS>,
+    ) -> Self {
         Self {
-            i2c,
+            system_i2c,
+            top_i2c,
             last_state_59: 0xFF,
             last_state_5a: 0xFF,
         }
@@ -202,34 +208,27 @@ where
             // 1. Check chips on Port 7 (System)
             // Note: SystemI2cBus already handles switching to mux port 7.
             if button_int.is_low() {
-                self.i2c.write_read(0x58u8, &[0x00], &mut port0_58).await?;
-                self.i2c.write_read(0x58u8, &[0x01], &mut port0_58).await?;
+                self.system_i2c.write_read(0x58u8, &[0x00], &mut port0_58).await?;
+                self.system_i2c.write_read(0x58u8, &[0x01], &mut port0_58).await?;
             }
             if button_int.is_low() {
-                self.i2c.write_read(0x59u8, &[0x00], &mut port0_59).await?;
-                self.i2c.write_read(0x59u8, &[0x01], &mut port1_59).await?;
+                self.system_i2c.write_read(0x59u8, &[0x00], &mut port0_59).await?;
+                self.system_i2c.write_read(0x59u8, &[0x01], &mut port1_59).await?;
             }
             if button_int.is_low() {
-                self.i2c.write_read(0x5au8, &[0x00], &mut port0_5a).await?;
-                self.i2c.write_read(0x5au8, &[0x01], &mut port1_5a).await?;
+                self.system_i2c.write_read(0x5au8, &[0x00], &mut port0_5a).await?;
+                self.system_i2c.write_read(0x5au8, &[0x01], &mut port1_5a).await?;
             }
             if button_int.is_low() {
-                self.i2c.write_read(0x6Au8, &[0x0B], &mut dummy).await?;
-                self.i2c.write_read(0x22u8, &[0x3E], &mut dummy).await?;
-                self.i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]).await?;
+                self.system_i2c.write_read(0x6Au8, &[0x0B], &mut dummy).await?;
+                self.system_i2c.write_read(0x22u8, &[0x3E], &mut dummy).await?;
+                self.system_i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]).await?;
             }
 
             // 2. Check chips on Port 0 (USB Out)
             if button_int.is_low() {
-                // We need to switch to port 0 to silence FUSB302B there.
-                // We don't have a TopBoardI2cBus handle here, so we'd have to use 
-                // the raw i2c or just rely on the existing SystemI2cBus not being enough.
-                // Actually, TypedButtons ONLY should care about the system bus for buttons.
-                // But the silencing logic is cross-bus.
-                
-                // TODO: Should TypedButtons handle the cross-bus silencing? 
-                // For now, let's keep it similar to wait_for_press, but wait_for_press
-                // had the raw i2c.
+                self.top_i2c.write_read(0x22u8, &[0x3E], &mut dummy).await?;
+                self.top_i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]).await?;
             }
 
             let changed_59 = port0_59[0] ^ self.last_state_59;

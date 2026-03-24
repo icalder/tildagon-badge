@@ -62,9 +62,10 @@ To respect the work of the community, we will **credit the upstream project** [t
 *   [x] **Buttons**: Add a new async `wait_for_event()` / interrupt-driven API only after compatibility is preserved.
 *   [x] **LEDs**: Keep the current RMT-based LED driver API intact; only migrate any related expander-controlled setup (such as LED power control) to typed pins where it improves clarity.
 
-### Phase 4: Opt-In Migration of Downstream Code
-*   [ ] Update `embassy_blinky` only after the compatibility layer is proven.
-*   [ ] Migrate downstream code incrementally to new resource-splitting and typed-pin APIs instead of forcing a flag day.
+### Phase 4: Opt-In Migration of Downstream Code ✅
+*   [x] Update `embassy_blinky` only after the compatibility layer is proven.
+*   [x] Migrate downstream code incrementally to new shared-bus and typed-pin APIs instead of forcing a flag day.
+*   [x] Keep the legacy `TildagonHardware`, `Buttons`, and `Leds` compatibility surface available while downstream code opts into `TypedButtons` / `TypedLeds`.
 
 ---
 
