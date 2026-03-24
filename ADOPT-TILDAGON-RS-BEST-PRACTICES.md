@@ -57,10 +57,10 @@ To respect the work of the community, we will **credit the upstream project** [t
 *   [x] **CRITICAL**: Preserve "Secure USB Serial" logic (0x5a pin 4 LOW) early in initialization.
 *   [x] Preserve existing initialization side effects such as LED power enable and button-expander setup.
 
-### Phase 3: Add New APIs Alongside Existing Ones
-*   [ ] **Buttons**: Add typed-pin- and mux-aware internals first, but keep `Buttons::wait_for_press()` working unchanged for existing callers.
-*   [ ] **Buttons**: Add a new async `wait_for_event()` / interrupt-driven API only after compatibility is preserved.
-*   [ ] **LEDs**: Keep the current RMT-based LED driver API intact; only migrate any related expander-controlled setup (such as LED power control) to typed pins where it improves clarity.
+### Phase 3: Add New APIs Alongside Existing Ones ✅
+*   [x] **Buttons**: Add typed-pin- and mux-aware internals first, but keep `Buttons::wait_for_press()` working unchanged for existing callers.
+*   [x] **Buttons**: Add a new async `wait_for_event()` / interrupt-driven API only after compatibility is preserved.
+*   [x] **LEDs**: Keep the current RMT-based LED driver API intact; only migrate any related expander-controlled setup (such as LED power control) to typed pins where it improves clarity.
 
 ### Phase 4: Opt-In Migration of Downstream Code
 *   [ ] Update `embassy_blinky` only after the compatibility layer is proven.

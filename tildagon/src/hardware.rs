@@ -6,6 +6,7 @@ use esp_hal::peripherals::{RMT, GPIO21};
 use esp_hal::Blocking;
 use embassy_time::{Duration, Timer};
 use crate::Error;
+use crate::pins::{Pins, pin::PinExt};
 
 /// Central hardware handle for the Tildagon badge.
 ///
@@ -92,6 +93,8 @@ impl TildagonHardware {
             .with_sda(i2c_res.sda)
             .with_scl(i2c_res.scl);
 
+        let pins = Pins::new();
+
         // Enable I2C Mux Channel 7 (System Bus)
         i2c.write(0x77u8, &[1 << 7])?;
 
@@ -151,8 +154,9 @@ impl TildagonHardware {
         i2c.write(0x5au8, &[0x11, 0x10])?;
         Timer::after(Duration::from_millis(2)).await;
 
-        // Enable LED power: 0x5a pin 2 HIGH
-        i2c.write(0x5au8, &[0x02, 1 << 2])?;
+        // Enable LED power using typed pin info for clarity.
+        // ws2812_power_en is 0x5a port 0 pin 2.
+        i2c.write(pins.led.power_enable.address(), &[0x02, pins.led.power_enable.bit()])?;
 
         // Clear ALL pending interrupts
         {

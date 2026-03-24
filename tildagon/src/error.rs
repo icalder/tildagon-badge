@@ -3,6 +3,7 @@ pub enum Error {
     I2c(esp_hal::i2c::master::Error),
     I2cConfig(esp_hal::i2c::master::ConfigError),
     Leds(esp_hal_smartled::LedAdapterError),
+    Pins(embedded_hal::digital::ErrorKind),
 }
 
 impl From<esp_hal::i2c::master::Error> for Error {
