@@ -28,6 +28,8 @@ pub struct TildagonHardware {
     pub button_int: Input<'static>,
     pub rmt: RMT<'static>,
     pub led_pin: GPIO21<'static>,
+    pub top_board: crate::resources::TopBoardResources<'static>,
+    pub display: crate::resources::DisplayResources<'static>,
 }
 
 impl TildagonHardware {
@@ -81,6 +83,16 @@ impl TildagonHardware {
         let led_res = crate::resources::LedResources {
             data: peripherals.GPIO21,
             rmt:  peripherals.RMT,
+        };
+        let top_board_res = crate::resources::TopBoardResources {
+            hs_1: peripherals.GPIO8,
+            hs_2: peripherals.GPIO7,
+            hs_3: peripherals.GPIO2,
+            hs_4: peripherals.GPIO1,
+        };
+        let display_res = crate::resources::DisplayResources {
+            spi: peripherals.SPI2,
+            dma: peripherals.DMA_CH0,
         };
 
         // Tildagon Badge I2C Reset/Enable Pin (GPIO 9) - releases expanders from reset.
@@ -186,6 +198,8 @@ impl TildagonHardware {
             button_int,
             rmt: led_res.rmt,
             led_pin: led_res.data,
+            top_board: top_board_res,
+            display: display_res,
         })
     }
 }

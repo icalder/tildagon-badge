@@ -25,6 +25,9 @@ esp-hal-smartled = "0.17.0"
 static_cell = "2.1.0"
 embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
+mipidsi = "0.10.0"
+embedded-graphics = "0.8.2"
+embedded-hal-bus = "0.3.0"
 
 [features]
 default = ["esp32s3"]

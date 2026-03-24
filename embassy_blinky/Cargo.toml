@@ -18,6 +18,8 @@ smart-leds = "0.4.0"
 esp-hal-smartled = "0.17.0"
 static_cell = "2.1.0"
 tildagon = { path = "../tildagon" }
+embedded-graphics = "0.8.2"
+profont = "0.7.0"
 
 [features]
 # Sets the default chip for less noisy `cargo build`, `rust-analyzer` etc.

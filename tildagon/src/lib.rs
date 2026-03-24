@@ -6,6 +6,7 @@
 #![cfg_attr(test, no_main)]
 
 pub mod buttons;
+pub mod display;
 pub mod error;
 pub mod hardware;
 pub mod i2c;
