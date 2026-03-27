@@ -6,6 +6,7 @@ use esp_hal::peripherals::{RMT, GPIO21};
 use esp_hal::Blocking;
 use embassy_time::{Duration, Timer};
 use crate::Error;
+use crate::display::{DisplayInitError, TildagonDisplay};
 use crate::pins::{Pins, pin::PinExt};
 
 /// Central hardware handle for the Tildagon badge.
@@ -17,8 +18,8 @@ pub struct TildagonHardware {
     pub button_int: Input<'static>,
     pub rmt: RMT<'static>,
     pub led_pin: GPIO21<'static>,
-    pub top_board: crate::resources::TopBoardResources<'static>,
-    pub display: crate::resources::DisplayResources<'static>,
+    top_board: Option<crate::resources::TopBoardResources<'static>>,
+    display: Option<crate::resources::DisplayResources<'static>>,
     radio_res: Option<crate::resources::RadioResources<'static>>,
 }
 
@@ -190,10 +191,27 @@ impl TildagonHardware {
             button_int,
             rmt: led_res.rmt,
             led_pin: led_res.data,
-            top_board: top_board_res,
-            display: display_res,
+            top_board: Some(top_board_res),
+            display: Some(display_res),
             radio_res: Some(radio_res),
         })
+    }
+
+    /// Initialize the badge display while retaining access to other hardware resources.
+    pub fn init_display<'a>(
+        &mut self,
+        buffer: &'a mut [u8],
+    ) -> Result<TildagonDisplay<'a>, DisplayInitError> {
+        let top_board = self
+            .top_board
+            .take()
+            .ok_or(DisplayInitError::ResourcesUnavailable)?;
+        let display = self
+            .display
+            .take()
+            .ok_or(DisplayInitError::ResourcesUnavailable)?;
+
+        crate::display::init(top_board, display, buffer)
     }
 
     /// Initialize the shared radio controller and take ownership of the WiFi/BLE peripherals.

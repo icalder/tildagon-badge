@@ -22,6 +22,7 @@ use mipidsi::{
 pub enum DisplayInitError {
     DmaRxBuffer,
     DmaTxBuffer,
+    ResourcesUnavailable,
     SpiConfig,
     SpiDevice,
     DisplayInit,

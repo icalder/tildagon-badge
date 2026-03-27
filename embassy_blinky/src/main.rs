@@ -19,7 +19,7 @@ use static_cell::StaticCell;
 use tildagon::hardware::TildagonHardware;
 use tildagon::leds::{TypedLeds, NUM_LEDS};
 use tildagon::buttons::{Button, ButtonEvent, TypedButtons};
-use tildagon::display::{self, TildagonDisplay};
+use tildagon::display::TildagonDisplay;
 use tildagon::i2c::{SharedI2cBus, system_i2c_bus, top_i2c_bus};
 use tildagon::pins::Pins;
 
@@ -192,9 +192,13 @@ fn get_button_pos(btn: Button) -> Point {
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
-    let tildagon = TildagonHardware::new(esp_hal::init(esp_hal::Config::default()))
+    let mut tildagon = TildagonHardware::new(esp_hal::init(esp_hal::Config::default()))
         .await
         .expect("Tildagon hardware init failed");
+
+    static DISPLAY_BUFFER: StaticCell<[u8; 1024]> = StaticCell::new();
+    let display_buffer = DISPLAY_BUFFER.init([0u8; 1024]);
+    let display = tildagon.init_display(display_buffer);
 
     static SHARED_I2C: StaticCell<
         SharedI2cBus<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
@@ -216,9 +220,7 @@ async fn main(spawner: Spawner) {
         .spawn(button_monitor(channel.subscriber().unwrap()))
         .expect("Failed to spawn button_monitor");
 
-    static DISPLAY_BUFFER: StaticCell<[u8; 1024]> = StaticCell::new();
-    let display_buffer = DISPLAY_BUFFER.init([0u8; 1024]);
-    match display::init(tildagon.top_board, tildagon.display, display_buffer) {
+    match display {
         Ok(display) => {
             spawner
                 .spawn(display_task(display, channel.subscriber().unwrap()))
