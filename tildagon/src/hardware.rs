@@ -129,13 +129,7 @@ impl TildagonHardware {
         i2c.write(0x77u8, &[1 << 7])?;
         Timer::after(Duration::from_millis(2)).await;
 
-        i2c.write(0x6Au8, &[0x14, 0x80])?;
-        Timer::after(Duration::from_millis(10)).await;
-        // Match the original firmware's BQ25895 init block:
-        // reg 0x02..0x05 = 0x60, 0x10, 0x18, 0x00, then reg 0x07 = 0x8C.
-        i2c.write(0x6Au8, &[0x02, 0x60, 0x10, 0x18, 0x00])?;
-        i2c.write(0x6Au8, &[0x07, 0x8C])?;
-        i2c.write_read(0x6Au8, &[0x0B], &mut dummy)?;
+        crate::battery::init_bq25895(&mut i2c).await?;
 
         i2c.write(0x22u8, &[0x0C, 0x01])?;
         Timer::after(Duration::from_millis(2)).await;

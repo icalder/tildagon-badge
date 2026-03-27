@@ -6,6 +6,7 @@
 //! estimate derived from the original badge firmware.
 
 use embedded_hal_async::i2c::I2c as _;
+use embassy_time::{Duration, Timer};
 
 use crate::{Error, i2c::SystemI2cBus};
 
@@ -13,6 +14,12 @@ const ADDRESS: u8 = 0x6A;
 const STATUS_START_REGISTER: u8 = 0x0B;
 const STATUS_BLOCK_LEN: usize = 8;
 const CHARGE_STATUS_MASK: u8 = 0x18;
+const RESET_REGISTER: u8 = 0x14;
+const RESET_REGISTER_VALUE: u8 = 0x80;
+const CONFIG_START_REGISTER: u8 = 0x02;
+const CONFIG_BLOCK: [u8; 5] = [CONFIG_START_REGISTER, 0x60, 0x10, 0x18, 0x00];
+const CONTROL_REGISTER: u8 = 0x07;
+const CONTROL_REGISTER_VALUE: u8 = 0x8C;
 
 const VBAT_DISCHARGING_MAX: f32 = 4.14;
 const VBAT_DISCHARGING_MIN: f32 = 3.5;
@@ -132,6 +139,30 @@ fn scaled_measurement(raw: u8, lsb_scale: f32, offset: f32) -> f32 {
     } else {
         value as f32 * lsb_scale + offset
     }
+}
+
+/// Initialise the BQ25895 with the original badge firmware's configuration.
+///
+/// This resets the chip, applies the original register block at `0x02..0x05`,
+/// writes `0x8C` to register `0x07`, then reads status once to clear pending
+/// state on the shared interrupt line.
+pub async fn init_bq25895<BUS>(i2c: &mut BUS) -> Result<(), Error>
+where
+    BUS: embedded_hal::i2c::I2c,
+    Error: From<BUS::Error>,
+{
+    let mut dummy = [0u8; 2];
+
+    i2c.write(ADDRESS, &[RESET_REGISTER, RESET_REGISTER_VALUE])
+        .map_err(Error::from)?;
+    Timer::after(Duration::from_millis(10)).await;
+    i2c.write(ADDRESS, &CONFIG_BLOCK).map_err(Error::from)?;
+    i2c.write(ADDRESS, &[CONTROL_REGISTER, CONTROL_REGISTER_VALUE])
+        .map_err(Error::from)?;
+    i2c.write_read(ADDRESS, &[STATUS_START_REGISTER], &mut dummy)
+        .map_err(Error::from)?;
+
+    Ok(())
 }
 
 /// Reusable BQ25895 battery/charger reader bound to the system I2C bus.
