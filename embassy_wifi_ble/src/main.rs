@@ -22,6 +22,7 @@ use esp_radio::wifi::{
 };
 use static_cell::StaticCell;
 use tildagon::hardware::TildagonHardware;
+use trouble_host::advertise::AdStructure;
 use trouble_host::central::Central;
 use trouble_host::prelude::*;
 
@@ -108,36 +109,18 @@ async fn wifi_scan_task(mut controller: WifiController<'static>) {
 struct ScannerHandler;
 
 fn advertised_name(data: &[u8]) -> Option<&str> {
-    let mut index = 0;
     let mut shortened_name = None;
 
-    while index < data.len() {
-        let field_len = data[index] as usize;
-        index += 1;
-
-        if field_len == 0 {
-            break;
-        }
-
-        let field_end = index + field_len;
-        if field_end > data.len() {
-            break;
-        }
-
-        let field_type = data[index];
-        let field_data = &data[index + 1..field_end];
-
-        match field_type {
-            0x09 => return str::from_utf8(field_data).ok(),
-            0x08 => {
+    for structure in AdStructure::decode(data).flatten() {
+        match structure {
+            AdStructure::CompleteLocalName(name) => return str::from_utf8(name).ok(),
+            AdStructure::ShortenedLocalName(name) => {
                 if shortened_name.is_none() {
-                    shortened_name = str::from_utf8(field_data).ok();
+                    shortened_name = str::from_utf8(name).ok();
                 }
             }
             _ => {}
         }
-
-        index = field_end;
     }
 
     shortened_name
