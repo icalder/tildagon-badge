@@ -189,5 +189,12 @@ assign_resources! {
             hs_3: GPIO5,
             hs_4: GPIO6,
         },
+        /// Radio resources (WiFi, Bluetooth, clocks, RNG).
+        radio: RadioResources<'d> {
+            wifi: WIFI,
+            bt:   BT,
+            rng:  RNG,
+            timer: TIMG1,
+        },
     }
 }

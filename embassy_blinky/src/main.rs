@@ -6,6 +6,8 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -190,6 +192,8 @@ fn get_button_pos(btn: Button) -> Point {
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
+    esp_alloc::heap_allocator!(size: 128 * 1024);
+
     let tildagon = TildagonHardware::new(esp_hal::init(esp_hal::Config::default()))
         .await
         .expect("Tildagon hardware init failed");
@@ -203,7 +207,7 @@ async fn main(spawner: Spawner) {
 
     esp_println::println!("Boot: Tildagon hardware init done, typed shared I2C ready");
 
-    spawner.spawn(run()).ok();
+    spawner.spawn(run()).expect("Failed to spawn run_task");
 
     static BUTTON_CHANNEL: StaticCell<
         PubSubChannel<CriticalSectionRawMutex, ButtonEvent, 1, 3, 1>,
@@ -212,7 +216,7 @@ async fn main(spawner: Spawner) {
 
     spawner
         .spawn(button_monitor(channel.subscriber().unwrap()))
-        .ok();
+        .expect("Failed to spawn button_monitor");
 
     static DISPLAY_BUFFER: StaticCell<[u8; 1024]> = StaticCell::new();
     let display_buffer = DISPLAY_BUFFER.init([0u8; 1024]);
@@ -220,7 +224,7 @@ async fn main(spawner: Spawner) {
         Ok(display) => {
             spawner
                 .spawn(display_task(display, channel.subscriber().unwrap()))
-                .ok();
+                .expect("Failed to spawn display_task");
         }
         Err(e) => {
             esp_println::println!("[DISPLAY] Init error: {:?}", e);
@@ -238,7 +242,7 @@ async fn main(spawner: Spawner) {
 
     spawner
         .spawn(blinky(leds, channel.subscriber().unwrap()))
-        .ok();
+        .expect("Failed to spawn blinky");
 
     let publisher = channel.publisher().unwrap();
     let mut buttons = TypedButtons::new(

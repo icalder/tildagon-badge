@@ -37,3 +37,7 @@ To flash, and monitor output:
 Or, using the Cargo root project:
 
 cargo build -p embassy_blinky --features esp32s3 --target xtensa-esp32s3-none-elf --release
+cargo run -p embassy_blinky --release
+
+cargo build -p embassy_wifi_ble --features esp32s3 --target xtensa-esp32s3-none-elf --release
+cargo run -p embassy_wifi_ble --release

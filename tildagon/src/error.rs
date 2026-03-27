@@ -4,6 +4,7 @@ pub enum Error {
     I2cConfig(esp_hal::i2c::master::ConfigError),
     Leds(esp_hal_smartled::LedAdapterError),
     Pins(embedded_hal::digital::ErrorKind),
+    Radio(esp_radio::InitializationError),
 }
 
 impl From<esp_hal::i2c::master::Error> for Error {

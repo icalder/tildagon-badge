@@ -2,7 +2,8 @@
 resolver = "3"
 members = [
     "tildagon",
-    "embassy_blinky"
+    "embassy_blinky",
+    "embassy_wifi_ble"
 ]
 
 [profile.release]

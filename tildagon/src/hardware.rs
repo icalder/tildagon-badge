@@ -5,8 +5,11 @@ use esp_hal::delay::Delay;
 use esp_hal::peripherals::{RMT, GPIO21};
 use esp_hal::Blocking;
 use embassy_time::{Duration, Timer};
+use static_cell::StaticCell;
 use crate::Error;
 use crate::pins::{Pins, pin::PinExt};
+
+static RADIO_CELL: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
 
 /// Central hardware handle for the Tildagon badge.
 ///
@@ -30,6 +33,8 @@ pub struct TildagonHardware {
     pub led_pin: GPIO21<'static>,
     pub top_board: crate::resources::TopBoardResources<'static>,
     pub display: crate::resources::DisplayResources<'static>,
+    pub radio: &'static esp_radio::Controller<'static>,
+    pub radio_res: crate::resources::RadioResources<'static>,
 }
 
 impl TildagonHardware {
@@ -94,6 +99,14 @@ impl TildagonHardware {
             spi: peripherals.SPI2,
             dma: peripherals.DMA_CH0,
         };
+        let radio_res = crate::resources::RadioResources {
+            wifi: peripherals.WIFI,
+            bt:   peripherals.BT,
+            rng:  peripherals.RNG,
+            timer: peripherals.TIMG1,
+        };
+        
+        let radio = RADIO_CELL.init(esp_radio::init().map_err(Error::Radio)?);
 
         // Tildagon Badge I2C Reset/Enable Pin (GPIO 9) - releases expanders from reset.
         // _i2c_reset is kept alive until end of fn to hold the pin HIGH throughout init.
@@ -200,6 +213,8 @@ impl TildagonHardware {
             led_pin: led_res.data,
             top_board: top_board_res,
             display: display_res,
+            radio,
+            radio_res,
         })
     }
 }
