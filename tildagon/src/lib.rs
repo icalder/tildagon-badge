@@ -12,6 +12,7 @@ pub mod hardware;
 pub mod i2c;
 pub mod leds;
 pub mod pins;
+pub mod radio;
 pub mod resources;
 
 pub use error::Error;

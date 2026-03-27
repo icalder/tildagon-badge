@@ -192,8 +192,6 @@ fn get_button_pos(btn: Button) -> Point {
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
-    esp_alloc::heap_allocator!(size: 128 * 1024);
-
     let tildagon = TildagonHardware::new(esp_hal::init(esp_hal::Config::default()))
         .await
         .expect("Tildagon hardware init failed");
