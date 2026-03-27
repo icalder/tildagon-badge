@@ -47,12 +47,56 @@ async fn run() {
 #[embassy_executor::task]
 async fn button_monitor(
     mut sub: Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 1, 3, 1>,
+    mut battery: Battery<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
 ) {
     esp_println::println!("[BUTTON_MONITOR] Ready, awaiting button events...");
+    let power_hold_time = Duration::from_secs(2);
 
     loop {
         let event = sub.next_message_pure().await;
         esp_println::println!("[BUTTON_MONITOR] Event: {:?}", event);
+
+        if event != ButtonEvent::Pressed(Button::F) {
+            continue;
+        }
+
+        esp_println::println!("[BUTTON_MONITOR] Hold F for 2s to power off");
+
+        match embassy_time::with_timeout(power_hold_time, async {
+            loop {
+                let event = sub.next_message_pure().await;
+                esp_println::println!("[BUTTON_MONITOR] Event: {:?}", event);
+
+                if event == ButtonEvent::Released(Button::F) {
+                    break;
+                }
+            }
+        })
+        .await
+        {
+            Ok(()) => {
+                esp_println::println!("[BUTTON_MONITOR] Power-off cancelled");
+            }
+            Err(_) => {
+                esp_println::println!("[BUTTON_MONITOR] Long press detected, powering off");
+                match battery.power_off().await {
+                    Ok(()) => {
+                        esp_println::println!(
+                            "[BUTTON_MONITOR] BATFET disabled; waiting for power loss"
+                        );
+                        loop {
+                            Timer::after(Duration::from_secs(1)).await;
+                        }
+                    }
+                    Err(e) => {
+                        esp_println::println!(
+                            "[BUTTON_MONITOR] Failed to request power-off: {:?}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -348,7 +392,10 @@ async fn main(spawner: Spawner) {
     let channel = BUTTON_CHANNEL.init(PubSubChannel::new());
 
     spawner
-        .spawn(button_monitor(channel.subscriber().unwrap()))
+        .spawn(button_monitor(
+            channel.subscriber().unwrap(),
+            Battery::new(system_i2c_bus(shared_i2c)),
+        ))
         .expect("Failed to spawn button_monitor");
 
     match display {

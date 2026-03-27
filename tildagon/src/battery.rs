@@ -240,6 +240,13 @@ where
         })
     }
 
+    /// Request badge power-off by disconnecting the battery via the BATFET.
+    pub async fn power_off(&mut self) -> Result<(), Error> {
+        let misc = self.read_register(MISC_OPERATION_REGISTER).await?;
+        self.write_register(MISC_OPERATION_REGISTER, misc | BATFET_DISABLE_MASK)
+            .await
+    }
+
     async fn read_register(&mut self, register: u8) -> Result<u8, Error> {
         let mut value = [0u8; 1];
         self.i2c
@@ -247,5 +254,12 @@ where
             .await
             .map_err(Error::from)?;
         Ok(value[0])
+    }
+
+    async fn write_register(&mut self, register: u8, value: u8) -> Result<(), Error> {
+        self.i2c
+            .write(ADDRESS, &[register, value])
+            .await
+            .map_err(Error::from)
     }
 }
