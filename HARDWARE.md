@@ -146,11 +146,71 @@ The badge features two USB-C PD controllers and a dedicated battery management I
 
 - **Address:** `0x6A`
 - **Location:** Mux Channel 7.
-- **Functions:** Handles battery charging, VBUS/VBAT ADC measurements, and 5V boost for hexpansions.
-- **Watchdog:** The chip has a hardware watchdog that asserts an interrupt every few seconds if not petted or disabled.
-- **Silence Procedure:** 
+- **Functions:** Handles battery charging, ADC measurements (`VBAT`, `VSYS`, `VBUS`, charging current), and 5V boost for hexpansions.
+- **Not a fuel gauge:** This chip does **not** provide a true state-of-charge counter. Any battery "percentage" shown in firmware is an estimate derived from voltage/current heuristics.
+- **Watchdog / interrupts:** The chip has a hardware watchdog that asserts the shared interrupt line if not disabled. It also raises interrupts for charger and power-path events, but these are **event** notifications, not continuous battery-level updates.
+- **Silence / startup procedure:** 
     - Reset (Write `0x80` to reg `0x14`).
-    - Disable Watchdog and set ADC to one-shot (Write `0x8C` to reg `0x07` and `0x00` to reg `0x02`).
+    - Apply the same 4-register setup block used by the original firmware (Write `0x60, 0x10, 0x18, 0x00` starting at reg `0x02`).
+    - Then write `0x8C` to reg `0x07` to disable the watchdog and configure ADC/charger behaviour.
+    - Read a status register afterward to clear any pending interrupt state if needed.
+
+#### Reading battery and power measurements
+
+The original badge firmware reads an 8-byte block starting at register `0x0B`:
+
+- `0x0B` = charger status
+- `0x0C` = fault status
+- `0x0E` = `VBAT`
+- `0x0F` = `VSYS`
+- `0x11` = `VBUS`
+- `0x12` = charging current
+
+In other words, a single `write_read(0x6A, &[0x0B], &mut buf)` can fetch the key status and ADC values needed for UI or logging.
+
+The useful conversions found in the original firmware are:
+
+```rust
+let raw_vbat = buf[3] & 0x7F;   // reg 0x0E
+let raw_vsys = buf[4] & 0x7F;   // reg 0x0F
+let raw_vbus = buf[6] & 0x7F;   // reg 0x11
+let raw_ichg = buf[7] & 0x7F;   // reg 0x12
+
+let vbat_volts = if raw_vbat == 0 { 0.0 } else { raw_vbat as f32 * 0.02 + 2.304 };
+let vsys_volts = if raw_vsys == 0 { 0.0 } else { raw_vsys as f32 * 0.02 + 2.304 };
+let vbus_volts = if raw_vbus == 0 { 0.0 } else { raw_vbus as f32 * 0.10 + 2.600 };
+let charge_current_amps = raw_ichg as f32 * 0.05;
+```
+
+The charge-status bits live in `reg 0x0B` mask `0x18`:
+
+- `0x00` = not charging
+- `0x08` = pre-charging
+- `0x10` = fast charging
+- `0x18` = charge terminated / charged
+
+#### Estimated battery percentage
+
+The original firmware estimates battery level from `VBAT`, charge state, and charging current. It uses different ranges for charging vs. discharging because the BQ25895 is not a coulomb counter:
+
+- **Discharging / not charging:** map roughly `3.5V .. 4.14V` to `0% .. 100%`
+- **Charging, constant-current phase:** map roughly `3.6V .. 4.2V` to the first ~`80%`
+- **Charging, constant-voltage phase:** infer the last ~`20%` from the tapering charging current
+
+This is good enough for a UI indicator, but should be treated as an approximation rather than a calibrated battery gauge.
+
+#### Interrupts vs polling
+
+The BQ25895 interrupt output is shared on `GPIO10` with the FUSB302B PD controllers and button-related activity. In practice:
+
+- interrupts are useful for "something changed" events such as plug/unplug, fault, or charge-state transitions
+- interrupts do **not** eliminate the need to read the BQ25895 registers to learn the new values
+- interrupts are **not** a replacement for periodic battery UI updates, because the chip does not interrupt on every small voltage/percentage change
+
+For display code, the most practical pattern is:
+
+- refresh immediately when the shared interrupt fires and a power event is suspected
+- also poll slowly (for example every `2-10s`) for on-screen battery information
 
 ## Buttons
 

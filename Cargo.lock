@@ -491,6 +491,7 @@ dependencies = [
  "esp-hal-smartled",
  "esp-println",
  "esp-rtos",
+ "heapless 0.8.0",
  "log",
  "profont",
  "smart-leds",

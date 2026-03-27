@@ -8,25 +8,30 @@
 
 extern crate alloc;
 
+use core::fmt::Write as _;
+
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::pubsub::{PubSubChannel, Subscriber};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
+use heapless::String;
 use smart_leds::colors::*;
 use static_cell::StaticCell;
-use tildagon::hardware::TildagonHardware;
-use tildagon::leds::{TypedLeds, NUM_LEDS};
+use tildagon::battery::{Battery, BatteryState};
 use tildagon::buttons::{Button, ButtonEvent, TypedButtons};
 use tildagon::display::TildagonDisplay;
+use tildagon::hardware::TildagonHardware;
 use tildagon::i2c::{SharedI2cBus, system_i2c_bus, top_i2c_bus};
+use tildagon::leds::{TypedLeds, NUM_LEDS};
 use tildagon::pins::Pins;
 
-use embedded_graphics::prelude::*;
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::text::Text;
 use embedded_graphics::mono_font::MonoTextStyle;
+use embedded_graphics::mono_font::ascii::FONT_10X20;
+use embedded_graphics::pixelcolor::Rgb565;
+use embedded_graphics::prelude::*;
+use embedded_graphics::text::{Alignment, Text};
 use profont::PROFONT_24_POINT;
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -40,7 +45,9 @@ async fn run() {
 }
 
 #[embassy_executor::task]
-async fn button_monitor(mut sub: Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 1, 3, 1>) {
+async fn button_monitor(
+    mut sub: Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 1, 3, 1>,
+) {
     esp_println::println!("[BUTTON_MONITOR] Ready, awaiting button events...");
 
     loop {
@@ -90,64 +97,70 @@ async fn blinky(
 async fn display_task(
     mut display: TildagonDisplay<'static>,
     mut sub: Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 1, 3, 1>,
+    mut battery: Battery<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
 ) {
     esp_println::println!("[DISPLAY] Task started");
 
-    let style = MonoTextStyle::new(&PROFONT_24_POINT, Rgb565::WHITE);
-    if let Err(e) = render_startup(&mut display, style) {
+    let level_style = MonoTextStyle::new(&PROFONT_24_POINT, Rgb565::WHITE);
+    let detail_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
+    if let Err(e) = render_startup(&mut display, level_style, detail_style) {
         esp_println::println!("[DISPLAY] Startup render error: {:?}", e);
         return;
     }
 
-    let mut next_event = None;
+    let mut battery_state = battery.read().await.ok();
+    let mut overlay: Option<(&'static str, Point, u8)> = None;
+    let mut battery_refresh_ticks = 0u8;
+
     loop {
-        let event = if let Some(e) = next_event.take() {
-            e
+        let mut redraw = false;
+
+        if battery_refresh_ticks == 0 {
+            battery_refresh_ticks = 10;
+            match battery.read().await {
+                Ok(state) => {
+                    battery_state = Some(state);
+                    redraw = true;
+                }
+                Err(e) => {
+                    esp_println::println!("[DISPLAY] Battery read error: {:?}", e);
+                    battery_state = None;
+                    redraw = true;
+                }
+            }
         } else {
-            sub.next_message_pure().await
-        };
-
-        let is_released = matches!(event, ButtonEvent::Released(_));
-        let (text, pos) = match event {
-            ButtonEvent::Pressed(b) => {
-                let t = match b {
-                    Button::A => "A P",
-                    Button::B => "B P",
-                    Button::C => "C P",
-                    Button::D => "D P",
-                    Button::E => "E P",
-                    Button::F => "F P",
-                };
-                (t, get_button_pos(b))
-            }
-            ButtonEvent::Released(b) => {
-                 let t = match b {
-                    Button::A => "A R",
-                    Button::B => "B R",
-                    Button::C => "C R",
-                    Button::D => "D R",
-                    Button::E => "E R",
-                    Button::F => "F R",
-                };
-                (t, get_button_pos(b))
-            }
-        };
-
-        if let Err(e) = render_button_event(&mut display, style, text, pos) {
-            esp_println::println!("[DISPLAY] Event render error: {:?}", e);
-            continue;
+            battery_refresh_ticks -= 1;
         }
 
-        if is_released {
-            match embassy_time::with_timeout(Duration::from_secs(1), sub.next_message_pure()).await {
-                Ok(e) => {
-                    next_event = Some(e);
-                }
-                Err(_) => {
-                    if let Err(e) = clear_display(&mut display) {
-                        esp_println::println!("[DISPLAY] Clear error: {:?}", e);
+        match embassy_time::with_timeout(Duration::from_millis(200), sub.next_message_pure()).await
+        {
+            Ok(event) => {
+                overlay = Some(button_overlay(event));
+                redraw = true;
+            }
+            Err(_) => {
+                if let Some((text, pos, ticks_left)) = overlay {
+                    if ticks_left > 1 {
+                        overlay = Some((text, pos, ticks_left - 1));
+                    } else {
+                        overlay = None;
+                        redraw = true;
                     }
                 }
+            }
+        }
+
+        if redraw {
+            let overlay_text = overlay.map(|(text, pos, _)| (text, pos));
+            let render_result = match battery_state {
+                Some(state) => {
+                    render_battery_info(&mut display, level_style, detail_style, state, overlay_text)
+                }
+                None => render_battery_error(&mut display, detail_style, overlay_text),
+            };
+
+            if let Err(e) = render_result {
+                esp_println::println!("[DISPLAY] Render error: {:?}", e);
             }
         }
     }
@@ -161,32 +174,119 @@ fn clear_display(display: &mut TildagonDisplay<'static>) -> Result<(), DisplayDr
 
 fn render_startup(
     display: &mut TildagonDisplay<'static>,
-    style: MonoTextStyle<'static, Rgb565>,
+    level_style: MonoTextStyle<'static, Rgb565>,
+    detail_style: MonoTextStyle<'static, Rgb565>,
 ) -> Result<(), DisplayDrawError> {
     clear_display(display)?;
-    Text::new("Tildagon", Point::new(60, 120), style).draw(display)?;
+    Text::with_alignment("Battery", Point::new(120, 96), detail_style, Alignment::Center)
+        .draw(display)?;
+    Text::with_alignment("--%", Point::new(120, 132), level_style, Alignment::Center)
+        .draw(display)?;
     Ok(())
 }
 
-fn render_button_event(
+fn render_battery_info(
     display: &mut TildagonDisplay<'static>,
-    style: MonoTextStyle<'static, Rgb565>,
-    text: &str,
-    pos: Point,
+    level_style: MonoTextStyle<'static, Rgb565>,
+    detail_style: MonoTextStyle<'static, Rgb565>,
+    state: BatteryState,
+    overlay: Option<(&str, Point)>,
+) -> Result<(), DisplayDrawError> {
+    let mut level_text: String<8> = String::new();
+    let mut voltage_text: String<16> = String::new();
+    let mut status_text: String<24> = String::new();
+
+    let _ = write!(level_text, "{}%", state.estimated_level_percent());
+    let _ = write!(voltage_text, "{:.2}V", state.vbat_volts);
+    let _ = write!(status_text, "{}", state.charge_status.as_str());
+
+    clear_display(display)?;
+    Text::with_alignment("Battery", Point::new(120, 84), detail_style, Alignment::Center)
+        .draw(display)?;
+    Text::with_alignment(
+        level_text.as_str(),
+        Point::new(120, 128),
+        level_style,
+        Alignment::Center,
+    )
+    .draw(display)?;
+    Text::with_alignment(
+        voltage_text.as_str(),
+        Point::new(120, 160),
+        detail_style,
+        Alignment::Center,
+    )
+    .draw(display)?;
+    Text::with_alignment(
+        status_text.as_str(),
+        Point::new(120, 184),
+        detail_style,
+        Alignment::Center,
+    )
+    .draw(display)?;
+
+    if let Some((text, pos)) = overlay {
+        Text::new(text, pos, detail_style).draw(display)?;
+    }
+
+    Ok(())
+}
+
+fn render_battery_error(
+    display: &mut TildagonDisplay<'static>,
+    detail_style: MonoTextStyle<'static, Rgb565>,
+    overlay: Option<(&str, Point)>,
 ) -> Result<(), DisplayDrawError> {
     clear_display(display)?;
-    Text::new(text, pos, style).draw(display)?;
+    Text::with_alignment("Battery", Point::new(120, 108), detail_style, Alignment::Center)
+        .draw(display)?;
+    Text::with_alignment("read error", Point::new(120, 136), detail_style, Alignment::Center)
+        .draw(display)?;
+
+    if let Some((text, pos)) = overlay {
+        Text::new(text, pos, detail_style).draw(display)?;
+    }
+
     Ok(())
+}
+
+fn button_overlay(event: ButtonEvent) -> (&'static str, Point, u8) {
+    let (text, button) = match event {
+        ButtonEvent::Pressed(button) => {
+            let text = match button {
+                Button::A => "A P",
+                Button::B => "B P",
+                Button::C => "C P",
+                Button::D => "D P",
+                Button::E => "E P",
+                Button::F => "F P",
+            };
+            (text, button)
+        }
+        ButtonEvent::Released(button) => {
+            let text = match button {
+                Button::A => "A R",
+                Button::B => "B R",
+                Button::C => "C R",
+                Button::D => "D R",
+                Button::E => "E R",
+                Button::F => "F R",
+            };
+            (text, button)
+        }
+    };
+
+    (text, get_button_pos(button), 5)
 }
 
 fn get_button_pos(btn: Button) -> Point {
     match btn {
-        Button::A => Point::new(100, 40),   // Top
-        Button::B => Point::new(170, 80),   // Top-Right
-        Button::C => Point::new(170, 170),  // Bottom-Right
-        Button::D => Point::new(100, 210),  // Bottom
-        Button::E => Point::new(30, 170),   // Bottom-Left
-        Button::F => Point::new(30, 80),    // Top-Left
+        Button::A => Point::new(100, 40),
+        Button::B => Point::new(170, 80),
+        Button::C => Point::new(170, 170),
+        Button::D => Point::new(100, 210),
+        Button::E => Point::new(30, 170),
+        Button::F => Point::new(30, 80),
     }
 }
 
@@ -222,8 +322,9 @@ async fn main(spawner: Spawner) {
 
     match display {
         Ok(display) => {
+            let battery = Battery::new(system_i2c_bus(shared_i2c));
             spawner
-                .spawn(display_task(display, channel.subscriber().unwrap()))
+                .spawn(display_task(display, channel.subscriber().unwrap(), battery))
                 .expect("Failed to spawn display_task");
         }
         Err(e) => {
@@ -245,10 +346,7 @@ async fn main(spawner: Spawner) {
         .expect("Failed to spawn blinky");
 
     let publisher = channel.publisher().unwrap();
-    let mut buttons = TypedButtons::new(
-        system_i2c_bus(shared_i2c),
-        top_i2c_bus(shared_i2c),
-    );
+    let mut buttons = TypedButtons::new(system_i2c_bus(shared_i2c), top_i2c_bus(shared_i2c));
 
     esp_println::println!("[BUTTON] Entering main loop, waiting for button events...");
     loop {

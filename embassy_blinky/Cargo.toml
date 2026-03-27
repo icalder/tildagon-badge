@@ -23,6 +23,7 @@ static_cell = "2.1.0"
 tildagon = { path = "../tildagon" }
 embedded-graphics = "0.8.2"
 profont = "0.7.0"
+heapless = "0.8.0"
 
 [features]
 # Sets the default chip for less noisy `cargo build`, `rust-analyzer` etc.
