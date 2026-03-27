@@ -8,6 +8,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 use alloc::string::ToString;
 use bt_hci::controller::ExternalController;
 use bt_hci::param::LeAdvReportsIter;
+use core::str;
 use embassy_executor::Spawner;
 use embassy_net::{Runner as NetRunner, StackResources};
 use embassy_time::{Duration, Timer};
@@ -106,11 +107,51 @@ async fn wifi_scan_task(mut controller: WifiController<'static>) {
 
 struct ScannerHandler;
 
+fn advertised_name(data: &[u8]) -> Option<&str> {
+    let mut index = 0;
+    let mut shortened_name = None;
+
+    while index < data.len() {
+        let field_len = data[index] as usize;
+        index += 1;
+
+        if field_len == 0 {
+            break;
+        }
+
+        let field_end = index + field_len;
+        if field_end > data.len() {
+            break;
+        }
+
+        let field_type = data[index];
+        let field_data = &data[index + 1..field_end];
+
+        match field_type {
+            0x09 => return str::from_utf8(field_data).ok(),
+            0x08 => {
+                if shortened_name.is_none() {
+                    shortened_name = str::from_utf8(field_data).ok();
+                }
+            }
+            _ => {}
+        }
+
+        index = field_end;
+    }
+
+    shortened_name
+}
+
 impl EventHandler for ScannerHandler {
     fn on_adv_reports(&self, reports: LeAdvReportsIter<'_>) {
         for report in reports {
             if let Ok(report) = report {
-                println!("BLE: Discovered {:?}, RSSI: {}", report.addr, report.rssi);
+                if let Some(name) = advertised_name(report.data) {
+                    println!("BLE: Discovered {name}, RSSI: {}", report.rssi);
+                } else {
+                    println!("BLE: Discovered {:?}, RSSI: {}", report.addr, report.rssi);
+                }
             }
         }
     }
