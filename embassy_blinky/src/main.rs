@@ -19,7 +19,7 @@ use esp_backtrace as _;
 use heapless::String;
 use smart_leds::colors::*;
 use static_cell::StaticCell;
-use tildagon::battery::{Battery, BatteryState};
+use tildagon::battery::{Battery, BatteryDiagnostics, BatteryState};
 use tildagon::buttons::{Button, ButtonEvent, TypedButtons};
 use tildagon::display::TildagonDisplay;
 use tildagon::hardware::TildagonHardware;
@@ -250,6 +250,29 @@ fn render_battery_error(
     Ok(())
 }
 
+fn log_battery_diagnostics(diag: &BatteryDiagnostics) {
+    esp_println::println!(
+        "[PMIC] status=0x{:02X} fault=0x{:02X} charge={} vbat={:.2}V vsys={:.2}V vbus={:.2}V ichg={:.2}A",
+        diag.state.raw_status,
+        diag.state.raw_fault,
+        diag.state.charge_status.as_str(),
+        diag.state.vbat_volts,
+        diag.state.vsys_volts,
+        diag.state.vbus_volts,
+        diag.state.charge_current_amps,
+    );
+    esp_println::println!(
+        "[PMIC] reg00=0x{:02X} hiz={} reg03=0x{:02X} boost={} reg07=0x{:02X} reg09=0x{:02X} batfet_disabled={}",
+        diag.reg00_input_source,
+        diag.input_hiz_enabled(),
+        diag.reg03_power_on_config,
+        diag.boost_enabled(),
+        diag.reg07_charge_timer,
+        diag.reg09_misc_operation,
+        diag.batfet_disabled(),
+    );
+}
+
 fn button_overlay(event: ButtonEvent) -> (&'static str, Point, u8) {
     let (text, button) = match event {
         ButtonEvent::Pressed(button) => {
@@ -308,6 +331,14 @@ async fn main(spawner: Spawner) {
     let pins = Pins::new();
 
     esp_println::println!("Boot: Tildagon hardware init done, typed shared I2C ready");
+
+    {
+        let mut battery_diag = Battery::new(system_i2c_bus(shared_i2c));
+        match battery_diag.diagnostics().await {
+            Ok(diag) => log_battery_diagnostics(&diag),
+            Err(e) => esp_println::println!("[PMIC] Diagnostic read failed: {:?}", e),
+        }
+    }
 
     spawner.spawn(run()).expect("Failed to spawn run_task");
 

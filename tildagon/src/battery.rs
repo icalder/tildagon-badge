@@ -14,12 +14,18 @@ const ADDRESS: u8 = 0x6A;
 const STATUS_START_REGISTER: u8 = 0x0B;
 const STATUS_BLOCK_LEN: usize = 8;
 const CHARGE_STATUS_MASK: u8 = 0x18;
+const INPUT_SOURCE_CONTROL_REGISTER: u8 = 0x00;
+const POWER_ON_CONFIG_REGISTER: u8 = 0x03;
 const RESET_REGISTER: u8 = 0x14;
 const RESET_REGISTER_VALUE: u8 = 0x80;
 const CONFIG_START_REGISTER: u8 = 0x02;
 const CONFIG_BLOCK: [u8; 5] = [CONFIG_START_REGISTER, 0x60, 0x10, 0x18, 0x00];
 const CONTROL_REGISTER: u8 = 0x07;
 const CONTROL_REGISTER_VALUE: u8 = 0x8C;
+const MISC_OPERATION_REGISTER: u8 = 0x09;
+const BATFET_DISABLE_MASK: u8 = 0x20;
+const INPUT_HIZ_MASK: u8 = 0x80;
+const OTG_BOOST_MASK: u8 = 0x20;
 
 const VBAT_DISCHARGING_MAX: f32 = 4.14;
 const VBAT_DISCHARGING_MIN: f32 = 3.5;
@@ -84,6 +90,33 @@ pub struct BatteryState {
     pub charge_current_amps: f32,
     /// Decoded charge state.
     pub charge_status: ChargeStatus,
+}
+
+/// Raw PMIC register snapshot useful for debugging power-path issues.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BatteryDiagnostics {
+    pub state: BatteryState,
+    pub reg00_input_source: u8,
+    pub reg03_power_on_config: u8,
+    pub reg07_charge_timer: u8,
+    pub reg09_misc_operation: u8,
+}
+
+impl BatteryDiagnostics {
+    /// Returns true if input Hi-Z mode is enabled.
+    pub fn input_hiz_enabled(&self) -> bool {
+        self.reg00_input_source & INPUT_HIZ_MASK != 0
+    }
+
+    /// Returns true if OTG boost mode is enabled.
+    pub fn boost_enabled(&self) -> bool {
+        self.reg03_power_on_config & OTG_BOOST_MASK != 0
+    }
+
+    /// Returns true if the battery FET has been disabled.
+    pub fn batfet_disabled(&self) -> bool {
+        self.reg09_misc_operation & BATFET_DISABLE_MASK != 0
+    }
 }
 
 impl BatteryState {
@@ -188,5 +221,31 @@ where
             .await
             .map_err(Error::from)?;
         Ok(BatteryState::from_registers(registers))
+    }
+
+    /// Read a small set of raw PMIC control registers plus the parsed battery state.
+    pub async fn diagnostics(&mut self) -> Result<BatteryDiagnostics, Error> {
+        let state = self.read().await?;
+        let reg00_input_source = self.read_register(INPUT_SOURCE_CONTROL_REGISTER).await?;
+        let reg03_power_on_config = self.read_register(POWER_ON_CONFIG_REGISTER).await?;
+        let reg07_charge_timer = self.read_register(CONTROL_REGISTER).await?;
+        let reg09_misc_operation = self.read_register(MISC_OPERATION_REGISTER).await?;
+
+        Ok(BatteryDiagnostics {
+            state,
+            reg00_input_source,
+            reg03_power_on_config,
+            reg07_charge_timer,
+            reg09_misc_operation,
+        })
+    }
+
+    async fn read_register(&mut self, register: u8) -> Result<u8, Error> {
+        let mut value = [0u8; 1];
+        self.i2c
+            .write_read(ADDRESS, &[register], &mut value)
+            .await
+            .map_err(Error::from)?;
+        Ok(value[0])
     }
 }
