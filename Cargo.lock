@@ -479,7 +479,6 @@ dependencies = [
 name = "embassy_blinky"
 version = "0.0.0"
 dependencies = [
- "bt-hci",
  "embassy-executor",
  "embassy-sync 0.8.0",
  "embassy-time",
@@ -497,7 +496,6 @@ dependencies = [
  "smart-leds",
  "static_cell",
  "tildagon",
- "trouble-host",
 ]
 
 [[package]]

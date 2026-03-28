@@ -14,8 +14,6 @@ esp-hal = { version = "1.0.0", features = ["log-04", "unstable"] }
 esp-rtos = { version = "0.2.0", features = ["embassy", "esp-alloc", "esp-radio", "log-04"] }
 esp-println = { version = "0.16.1", features = ["log-04"] }
 log = "0.4"
-trouble-host = { version = "0.4.0", features = ["central", "scan", "gatt"] }
-bt-hci = "0.6.0"
 esp-alloc = "0.9.0"
 smart-leds = "0.4.0"
 esp-hal-smartled = "0.17.0"
