@@ -8,8 +8,10 @@ The Tildagon badge has 19 individually addressable RGB LEDs (Neopixels/WS2812).
 
 - **Data Pin:** The LEDs are controlled via `GPIO21` using `esp-hal-smartled`.
 - **Number of LEDs:** 19 in a chain.
-- **Power Control:** Controlled by pin 2 of the AW9523B at `0x5a` (see below).
-- **⚠️ Embassy / async:** Use `SmartLedsAdapterAsync` (not `SmartLedsAdapter`). The blocking adapter refills the ESP32-S3 RMT hardware RAM (~96 entries) via interrupts, which conflict with Embassy's scheduler and cause `TransmissionError` for chains longer than ~4 LEDs. The async adapter sends one LED at a time, fitting within the hardware RAM. Use `buffer_size_async(NUM_LEDS)` for the buffer size constant.
+- **Power Control:** Controlled by pin 2 of the AW9523B at `0x5a` (see below). This pin must be driven HIGH to enable the 5V supply for the LED chain.
+- **Initialization:** It is recommended to perform an explicit `clear()` (sending all zeros) immediately after enabling power. This ensures the RMT peripheral and the WS2812B chain are synchronized, preventing random colors or index-shifting on the first real write.
+- **⚠️ Embassy / async:** Use `SmartLedsAdapterAsync` (not `SmartLedsAdapter`).
+ The blocking adapter refills the ESP32-S3 RMT hardware RAM (~96 entries) via interrupts, which conflict with Embassy's scheduler and cause `TransmissionError` for chains longer than ~4 LEDs. The async adapter sends one LED at a time, fitting within the hardware RAM. Use `buffer_size_async(NUM_LEDS)` for the buffer size constant.
 
 ## I2C Bus
 

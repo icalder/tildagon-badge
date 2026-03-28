@@ -97,7 +97,11 @@ where
         let adapter = SmartLedsAdapterAsync::new(rmt_channel, led_data_pin, rmt_buffer);
         let power_pin = power_pin.power_enable.into_output(i2c_bus).await?;
 
-        Ok(Self { adapter, power_pin })
+        let mut leds = Self { adapter, power_pin };
+        leds.set_power(true).await?;
+        leds.clear().await?;
+
+        Ok(leds)
     }
 
     /// Enable or disable power to the LED ring.

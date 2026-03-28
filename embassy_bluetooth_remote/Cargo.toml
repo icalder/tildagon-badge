@@ -1,0 +1,83 @@
+[package]
+name = "embassy_bluetooth_remote"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+embassy-executor = "0.9.1"
+embassy-time = "0.5.1"
+embassy-sync = "0.8.0"
+esp-backtrace = { version = "0.18.1", features = ["panic-handler", "println"] }
+esp-bootloader-esp-idf = "0.4.0"
+esp-hal = { version = "1.0.0", features = ["log-04", "unstable"] }
+esp-rtos = { version = "0.2.0", features = ["embassy", "log-04"] }
+esp-println = { version = "0.16.1", features = ["log-04"] }
+log = "0.4"
+esp-radio = { version = "0.17.0", features = ["esp32s3", "wifi", "ble", "coex", "log-04", "unstable"] }
+embassy-net = { version = "0.9.0", features = ["tcp", "udp", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
+trouble-host = { version = "0.4.0", features = ["central", "scan", "gatt"] }
+bt-hci = "0.6.0"
+esp-alloc = { version = "0.9.0" }
+smart-leds = "0.4.0"
+esp-hal-smartled = "0.17.0"
+static_cell = "2.1.0"
+tildagon = { path = "../tildagon", features = ["radio"] }
+
+[features]
+# Sets the default chip for less noisy `cargo build`, `rust-analyzer` etc.
+# Remove if you change chips often:
+default = ["esp32s3"]
+
+esp32 = [
+  "esp-backtrace/esp32",
+  "esp-bootloader-esp-idf/esp32",
+  "esp-rtos/esp32",
+  "esp-hal/esp32",
+]
+esp32c2 = [
+  "esp-backtrace/esp32c2",
+  "esp-bootloader-esp-idf/esp32c2",
+  "esp-rtos/esp32c2",
+  "esp-hal/esp32c2",
+]
+esp32c3 = [
+  "esp-backtrace/esp32c3",
+  "esp-bootloader-esp-idf/esp32c3",
+  "esp-rtos/esp32c3",
+  "esp-hal/esp32c3",
+]
+esp32c6 = [
+  "esp-backtrace/esp32c6",
+  "esp-bootloader-esp-idf/esp32c6",
+  "esp-rtos/esp32c6",
+  "esp-hal/esp32c6",
+]
+esp32h2 = [
+  "esp-backtrace/esp32h2",
+  "esp-bootloader-esp-idf/esp32h2",
+  "esp-rtos/esp32h2",
+  "esp-hal/esp32h2",
+]
+esp32s2 = [
+  "esp-backtrace/esp32s2",
+  "esp-bootloader-esp-idf/esp32s2",
+  "esp-rtos/esp32s2",
+  "esp-hal/esp32s2",
+]
+esp32s3 = [
+  "esp-backtrace/esp32s3",
+  "esp-bootloader-esp-idf/esp32s3",
+  "esp-rtos/esp32s3",
+  "esp-hal/esp32s3",
+]
+
+[[bin]]
+name = "embassy_bluetooth_remote"
+path = "src/main.rs"
+# In embedded dev, the tests should be compiled for and run on the host
+# architecture, as much as possible. You can also have an on-device integration
+# tests crate. Either way, you can’t use `#[test]` in `src/main.rs` for ESP32.
+test = false
+doctest = false
+bench = false

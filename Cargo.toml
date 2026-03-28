@@ -3,7 +3,8 @@ resolver = "3"
 members = [
     "tildagon",
     "embassy_blinky",
-    "embassy_wifi_ble"
+    "embassy_wifi_ble",
+    "embassy_bluetooth_remote"
 ]
 
 [profile.release]
