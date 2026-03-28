@@ -22,7 +22,7 @@ esp-alloc = { version = "0.9.0" }
 smart-leds = "0.4.0"
 esp-hal-smartled = "0.17.0"
 static_cell = "2.1.0"
-tildagon = { path = "../tildagon" }
+tildagon = { path = "../tildagon", features = ["radio"] }
 embedded-graphics = "0.8.2"
 profont = "0.7.0"
 

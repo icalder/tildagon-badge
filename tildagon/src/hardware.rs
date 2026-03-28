@@ -11,8 +11,9 @@ use crate::pins::{Pins, pin::PinExt};
 
 /// Central hardware handle for the Tildagon badge.
 ///
-/// This type owns the non-radio badge peripherals and can later hand the
-/// WiFi/BLE peripherals to [`crate::radio::TildagonRadio`].
+/// This type owns the non-radio badge peripherals and, when the `radio`
+/// feature is enabled, can later hand the WiFi/BLE peripherals to
+/// [`crate::radio::TildagonRadio`].
 pub struct TildagonHardware {
     pub i2c: I2c<'static, Blocking>,
     pub button_int: Input<'static>,
@@ -20,6 +21,7 @@ pub struct TildagonHardware {
     pub led_pin: GPIO21<'static>,
     top_board: Option<crate::resources::TopBoardResources<'static>>,
     display: Option<crate::resources::DisplayResources<'static>>,
+    #[cfg(feature = "radio")]
     radio_res: Option<crate::resources::RadioResources<'static>>,
 }
 
@@ -36,8 +38,9 @@ impl TildagonHardware {
     /// 6. Button-expander setup (0x58, 0x59, 0x5a) and LED-power enable.
     /// 7. Clears all pending interrupts, then re-enables button interrupts.
     ///
-    /// This constructor does not initialize the radio stack. Call
-    /// [`Self::init_radio`] only in applications that need WiFi or BLE.
+    /// This constructor does not initialize the radio stack. When the
+    /// `radio` feature is enabled, call [`Self::init_radio`] in applications
+    /// that need WiFi or BLE.
     pub async fn new(
         peripherals: esp_hal::peripherals::Peripherals,
     ) -> Result<Self, Error> {
@@ -83,11 +86,6 @@ impl TildagonHardware {
             spi: peripherals.SPI2,
             dma: peripherals.DMA_CH0,
         };
-        let radio_res = crate::resources::RadioResources {
-            wifi: peripherals.WIFI,
-            bt:   peripherals.BT,
-        };
-
         // Tildagon Badge I2C Reset/Enable Pin (GPIO 9) - releases expanders from reset.
         // _i2c_reset is kept alive until end of fn to hold the pin HIGH throughout init.
         let _i2c_reset = Output::new(i2c_res.reset, Level::High, OutputConfig::default());
@@ -189,7 +187,11 @@ impl TildagonHardware {
             led_pin: led_res.data,
             top_board: Some(top_board_res),
             display: Some(display_res),
-            radio_res: Some(radio_res),
+            #[cfg(feature = "radio")]
+            radio_res: Some(crate::resources::RadioResources {
+                wifi: peripherals.WIFI,
+                bt:   peripherals.BT,
+            }),
         })
     }
 
@@ -211,6 +213,7 @@ impl TildagonHardware {
     }
 
     /// Initialize the shared radio controller and take ownership of the WiFi/BLE peripherals.
+    #[cfg(feature = "radio")]
     pub fn init_radio(&mut self) -> Result<crate::radio::TildagonRadio, Error> {
         let controller = crate::radio::init_radio_controller()?;
         let radio_res = self.radio_res.take().ok_or(Error::RadioUnavailable)?;

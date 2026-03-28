@@ -13,6 +13,7 @@ pub mod hardware;
 pub mod i2c;
 pub mod leds;
 pub mod pins;
+#[cfg(feature = "radio")]
 pub mod radio;
 pub mod resources;
 
