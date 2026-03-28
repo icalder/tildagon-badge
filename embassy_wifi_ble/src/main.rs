@@ -13,6 +13,7 @@ use core::str;
 use core::sync::atomic::{AtomicU32, Ordering};
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
+use embassy_sync::mutex::Mutex as AsyncMutex;
 use embassy_net::Runner as NetRunner;
 use embassy_time::{Duration, Timer};
 use embedded_graphics::mono_font::{MonoTextStyle, MonoTextStyleBuilder, ascii::FONT_8X13};
@@ -28,7 +29,10 @@ use esp_radio::wifi::{
     ClientConfig, Config as WifiConfig, ScanConfig as WifiScanConfig, WifiController, WifiDevice,
 };
 use static_cell::StaticCell;
+use tildagon::battery::Battery;
+use tildagon::buttons::{Button, ButtonEvent, TypedButtons};
 use tildagon::display::TildagonDisplay;
+use tildagon::i2c::{SharedI2cBus, system_i2c_bus, top_i2c_bus};
 use tildagon::hardware::TildagonHardware;
 use trouble_host::advertise::AdStructure;
 use trouble_host::central::Central;
@@ -345,6 +349,14 @@ async fn main(spawner: Spawner) {
 
     let mut radio = tildagon.init_radio().expect("Tildagon radio init failed");
 
+    static SHARED_I2C: StaticCell<
+        SharedI2cBus<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
+    > = StaticCell::new();
+    let shared_i2c = SHARED_I2C.init(AsyncMutex::new(tildagon.i2c.into_async()));
+    let mut button_int = tildagon.button_int;
+    let mut battery = Battery::new(system_i2c_bus(shared_i2c));
+    let mut buttons = TypedButtons::new(system_i2c_bus(shared_i2c), top_i2c_bus(shared_i2c));
+
     // WiFi Init
     let (wifi_controller, _wifi_interfaces) = radio
         .init_wifi(WifiConfig::default())
@@ -399,7 +411,48 @@ async fn main(spawner: Spawner) {
         .spawn(ble_scan_task(central))
         .expect("Failed to spawn ble_scan_task");
 
+    println!("[BUTTON] Waiting for button events...");
     loop {
-        Timer::after(Duration::from_secs(5)).await;
+        match buttons.wait_for_event(&mut button_int).await {
+            Ok(Some(ButtonEvent::Pressed(Button::F))) => {
+                println!("[BUTTON] Hold F for 2s to power off");
+                match embassy_time::with_timeout(Duration::from_secs(2), async {
+                    loop {
+                        match buttons.wait_for_event(&mut button_int).await {
+                            Ok(Some(ButtonEvent::Released(Button::F))) => break,
+                            Ok(Some(event)) => println!("[BUTTON] Event: {:?}", event),
+                            Ok(None) => {}
+                            Err(e) => {
+                                println!("[BUTTON] Error reading buttons: {:?}", e);
+                                break;
+                            }
+                        }
+                    }
+                })
+                .await
+                {
+                    Ok(()) => {
+                        println!("[BUTTON] Power-off cancelled");
+                    }
+                    Err(_) => {
+                        println!("[BUTTON] Long press detected, powering off");
+                        match battery.power_off().await {
+                            Ok(()) => {
+                                println!("[BUTTON] BATFET disabled; waiting for power loss");
+                                loop {
+                                    Timer::after(Duration::from_secs(1)).await;
+                                }
+                            }
+                            Err(e) => {
+                                println!("[BUTTON] Failed to request power-off: {:?}", e);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Some(event)) => println!("[BUTTON] Event: {:?}", event),
+            Ok(None) => {}
+            Err(e) => println!("[BUTTON] Error reading buttons: {:?}", e),
+        }
     }
 }
