@@ -5,12 +5,14 @@ extern crate alloc;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-use alloc::format;
+use alloc::{collections::BTreeSet, format};
 use bt_hci::controller::ExternalController;
 use bt_hci::param::LeAdvReportsIter;
+use core::cell::RefCell;
 use core::str;
 use core::sync::atomic::{AtomicU32, Ordering};
 use embassy_executor::Spawner;
+use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_net::Runner as NetRunner;
 use embassy_time::{Duration, Timer};
 use embedded_graphics::mono_font::{MonoTextStyle, MonoTextStyleBuilder, ascii::FONT_8X13};
@@ -34,7 +36,9 @@ use trouble_host::prelude::*;
 
 static WIFI_SCAN_COUNT: AtomicU32 = AtomicU32::new(0);
 static WIFI_NETWORK_COUNT: AtomicU32 = AtomicU32::new(0);
-static BLE_REPORT_COUNT: AtomicU32 = AtomicU32::new(0);
+static BLE_SEEN_COUNT: AtomicU32 = AtomicU32::new(0);
+static BLE_SEEN_DEVICES: Mutex<CriticalSectionRawMutex, RefCell<BTreeSet<[u8; 6]>>> =
+    Mutex::new(RefCell::new(BTreeSet::new()));
 
 const BG: Rgb565 = Rgb565::new(0, 0, 0);
 const TEXT: Rgb565 = Rgb565::new(24, 48, 24);
@@ -127,11 +131,16 @@ impl EventHandler for ScannerHandler {
     fn on_adv_reports(&self, reports: LeAdvReportsIter<'_>) {
         for report in reports {
             if let Ok(report) = report {
-                BLE_REPORT_COUNT.fetch_add(1, Ordering::Relaxed);
-                if let Some(name) = advertised_name(report.data) {
-                    println!("BLE: Discovered {name}, RSSI: {}", report.rssi);
-                } else {
-                    println!("BLE: Discovered {:?}, RSSI: {}", report.addr, report.rssi);
+                let mut addr = [0u8; 6];
+                addr.copy_from_slice(report.addr.raw());
+                let was_new = BLE_SEEN_DEVICES.lock(|devices| devices.borrow_mut().insert(addr));
+                if was_new {
+                    BLE_SEEN_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if let Some(name) = advertised_name(report.data) {
+                        println!("BLE: Discovered {name}, RSSI: {}", report.rssi);
+                    } else {
+                        println!("BLE: Discovered {:?}, RSSI: {}", report.addr, report.rssi);
+                    }
                 }
             }
         }
@@ -214,7 +223,7 @@ fn frame_state(frame: u32) -> FrameState {
         circle_center_x: ping_pong(frame, 42, 198, 20),
         triangle_tip_y: ping_pong(frame.wrapping_add(10), 154, 188, 24),
         wifi_bar_width: (WIFI_NETWORK_COUNT.load(Ordering::Relaxed).saturating_mul(7)).clamp(10, BAR_MAX_WIDTH),
-        ble_bar_width: (BLE_REPORT_COUNT.load(Ordering::Relaxed) % BAR_MAX_WIDTH).max(10),
+        ble_bar_width: (BLE_SEEN_COUNT.load(Ordering::Relaxed).saturating_mul(7)).clamp(10, BAR_MAX_WIDTH),
         accent: match frame % 3 {
             0 => Rgb565::new(31, 0, 0),
             1 => Rgb565::new(0, 63, 0),
@@ -235,7 +244,7 @@ fn render_display_frame(
         .build();
     let wifi_scans = WIFI_SCAN_COUNT.load(Ordering::Relaxed);
     let wifi_networks = WIFI_NETWORK_COUNT.load(Ordering::Relaxed);
-    let ble_reports = BLE_REPORT_COUNT.load(Ordering::Relaxed);
+    let ble_seen = BLE_SEEN_COUNT.load(Ordering::Relaxed);
 
     if let Some(previous) = previous {
         draw_shapes(display, previous, BG, BG)?;
@@ -256,7 +265,7 @@ fn render_display_frame(
     )
     .draw(display)?;
     Text::with_alignment(
-        &format!("BLE seen: {ble_reports}"),
+        &format!("BLE seen: {ble_seen}"),
         Point::new(120, 110),
         text_style,
         Alignment::Center,
