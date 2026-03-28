@@ -7,7 +7,8 @@ publish = false
 [dependencies]
 embassy-executor = "0.9.1"
 embassy-time = "0.5.1"
-embassy-sync = "0.8.0"
+embassy-sync = "0.7.2"
+embassy-sync-08 = { package = "embassy-sync", version = "0.8.0" }
 esp-backtrace = { version = "0.18.1", features = ["panic-handler", "println"] }
 esp-bootloader-esp-idf = "0.4.0"
 esp-hal = { version = "1.0.0", features = ["log-04", "unstable"] }

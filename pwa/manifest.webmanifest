@@ -1,0 +1,27 @@
+{
+  "name": "Tildagon BLE LED Demo",
+  "short_name": "Tildagon BLE",
+  "description": "Installable Web Bluetooth control panel for the Tildagon badge LED service.",
+  "start_url": "./ble-led-demo.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f1220",
+  "theme_color": "#12182b",
+  "icons": [
+    {
+      "src": "./icons/ble-led-demo-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "./icons/ble-led-demo-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "./icons/ble-led-demo-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

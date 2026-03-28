@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tildagon BLE LED Demo</title>
+  <meta name="theme-color" content="#12182b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Tildagon BLE">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/ble-led-demo-icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icons/ble-led-demo-192.png">
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f1220;
+      color: #edf2ff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 24px;
+      background: linear-gradient(180deg, #12182b 0%, #0b0f1b 100%);
+    }
+
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      display: grid;
+      gap: 16px;
+    }
+
+    h1, h2 {
+      margin: 0 0 8px;
+    }
+
+    p {
+      margin: 0;
+      line-height: 1.4;
+    }
+
+    .card {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.25);
+    }
+
+    .toolbar,
+    .grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .toolbar {
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    }
+
+    .grid {
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 0.95rem;
+    }
+
+    input,
+    button,
+    select,
+    textarea {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(9, 12, 24, 0.85);
+      color: inherit;
+      padding: 10px 12px;
+      font: inherit;
+    }
+
+    input[type="color"] {
+      min-height: 44px;
+      padding: 4px;
+    }
+
+    button {
+      cursor: pointer;
+      background: linear-gradient(180deg, #415dff 0%, #3046d8 100%);
+      border: none;
+      font-weight: 600;
+    }
+
+    button.secondary {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 12px;
+    }
+
+    .status {
+      display: grid;
+      gap: 8px;
+    }
+
+    .status-line {
+      font-weight: 600;
+    }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 10px;
+      padding: 12px;
+      min-height: 72px;
+    }
+
+    .hint {
+      color: #b9c3ff;
+      font-size: 0.92rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <h1>Tildagon BLE LED Demo</h1>
+      <p>Simple Web Bluetooth control page for the Tildagon badge LED service.</p>
+      <p class="hint">Open this page from a secure context such as <code>https://</code> or <code>http://localhost</code>. Chrome and Edge have the best Web Bluetooth support.</p>
+      <p class="hint">For phones, expect the best results on Android with Chrome or Edge. iPhone Safari does not currently support Web Bluetooth.</p>
+    </section>
+
+    <section class="card toolbar">
+      <button id="connectButton">Connect</button>
+      <button id="disconnectButton" class="secondary" disabled>Disconnect</button>
+      <button id="readButton" class="secondary" disabled>Read Last Command</button>
+      <button id="clearButton" disabled>Clear LEDs</button>
+    </section>
+
+    <section class="card status">
+      <div class="status-line" id="statusLine">Status: Not connected</div>
+      <div>Device: <span id="deviceName">-</span></div>
+      <div>Last command: <span id="lastCommand">-</span></div>
+      <pre id="logOutput"></pre>
+    </section>
+
+    <section class="grid">
+      <form class="card" id="fillForm">
+        <h2>Fill All LEDs</h2>
+        <label>
+          Color
+          <input type="color" id="fillColor" value="#b400ff">
+        </label>
+        <button type="submit" disabled data-requires-ble>Send Fill</button>
+      </form>
+
+      <form class="card" id="singleLedForm">
+        <h2>Set One LED</h2>
+        <div class="row">
+          <label>
+            LED Index
+            <input type="number" id="singleLedIndex" min="0" max="18" value="0">
+          </label>
+          <label>
+            Color
+            <input type="color" id="singleLedColor" value="#ffffff">
+          </label>
+        </div>
+        <button type="submit" disabled data-requires-ble>Send Single LED</button>
+      </form>
+
+      <form class="card" id="blinkForm">
+        <h2>Blink</h2>
+        <div class="row">
+          <label>
+            Color
+            <input type="color" id="blinkColor" value="#0088ff">
+          </label>
+          <label>
+            Repeats
+            <input type="number" id="blinkRepeats" min="1" max="10" value="3">
+          </label>
+          <label>
+            On (100ms units)
+            <input type="number" id="blinkOn" min="1" max="100" value="5">
+          </label>
+          <label>
+            Off (100ms units)
+            <input type="number" id="blinkOff" min="1" max="100" value="3">
+          </label>
+        </div>
+        <button type="submit" disabled data-requires-ble>Send Blink</button>
+      </form>
+
+      <form class="card" id="chaseForm">
+        <h2>Chase</h2>
+        <div class="row">
+          <label>
+            Color
+            <input type="color" id="chaseColor" value="#00ff66">
+          </label>
+          <label>
+            Rounds
+            <input type="number" id="chaseRounds" min="1" max="8" value="2">
+          </label>
+          <label>
+            Step (10ms units)
+            <input type="number" id="chaseStep" min="1" max="100" value="8">
+          </label>
+        </div>
+        <button type="submit" disabled data-requires-ble>Send Chase</button>
+      </form>
+    </section>
+  </main>
+
+  <script>
+    const LED_SERVICE_UUID = '12345678-1234-5678-1234-56789abcdef0';
+    const LED_CHARACTERISTIC_UUID = '12345678-1234-5678-1234-56789abcdef1';
+
+    const connectButton = document.getElementById('connectButton');
+    const disconnectButton = document.getElementById('disconnectButton');
+    const readButton = document.getElementById('readButton');
+    const clearButton = document.getElementById('clearButton');
+    const statusLine = document.getElementById('statusLine');
+    const deviceName = document.getElementById('deviceName');
+    const lastCommand = document.getElementById('lastCommand');
+    const logOutput = document.getElementById('logOutput');
+    const bleButtons = Array.from(document.querySelectorAll('[data-requires-ble]'));
+
+    let device = null;
+    let characteristic = null;
+
+    function log(message) {
+      const line = `[${new Date().toLocaleTimeString()}] ${message}`;
+      logOutput.textContent = `${line}\n${logOutput.textContent}`.trim();
+    }
+
+    function setStatus(message) {
+      statusLine.textContent = `Status: ${message}`;
+    }
+
+    function setConnectedUi(connected) {
+      disconnectButton.disabled = !connected;
+      readButton.disabled = !connected;
+      clearButton.disabled = !connected;
+      bleButtons.forEach((button) => {
+        button.disabled = !connected;
+      });
+      connectButton.disabled = connected;
+    }
+
+    function ensureBluetoothSupport() {
+      if (!navigator.bluetooth) {
+        throw new Error('Web Bluetooth is not available in this browser/context.');
+      }
+    }
+
+    function hex(value) {
+      return value.toString(16).padStart(2, '0');
+    }
+
+    function formatBytes(bytes) {
+      return Array.from(bytes, (byte) => `0x${hex(byte)}`).join(' ');
+    }
+
+    function clampByte(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number < 0 || number > 255) {
+        throw new Error('Color components must be between 0 and 255.');
+      }
+      return number;
+    }
+
+    function clampRange(value, min, max, label) {
+      const number = Number(value);
+      if (!Number.isInteger(number) || number < min || number > max) {
+        throw new Error(`${label} must be between ${min} and ${max}.`);
+      }
+      return number;
+    }
+
+    function colorToRgb(colorString) {
+      const match = /^#([0-9a-f]{6})$/i.exec(colorString);
+      if (!match) {
+        throw new Error(`Invalid color: ${colorString}`);
+      }
+
+      const value = match[1];
+      return {
+        r: parseInt(value.slice(0, 2), 16),
+        g: parseInt(value.slice(2, 4), 16),
+        b: parseInt(value.slice(4, 6), 16),
+      };
+    }
+
+    function clearAll() {
+      return new Uint8Array([0x00, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    function setLed(index, r, g, b) {
+      return new Uint8Array([0x01, clampRange(index, 0, 18, 'LED index'), clampByte(r), clampByte(g), clampByte(b), 0, 0, 0]);
+    }
+
+    function fill(r, g, b) {
+      return new Uint8Array([0x02, clampByte(r), clampByte(g), clampByte(b), 0, 0, 0, 0]);
+    }
+
+    function blink(r, g, b, repeats, on100ms, off100ms) {
+      return new Uint8Array([
+        0x03,
+        clampByte(r),
+        clampByte(g),
+        clampByte(b),
+        clampRange(repeats, 1, 10, 'Repeats'),
+        clampRange(on100ms, 1, 100, 'On time'),
+        clampRange(off100ms, 1, 100, 'Off time'),
+        0,
+      ]);
+    }
+
+    function chase(r, g, b, rounds, step10ms) {
+      return new Uint8Array([
+        0x04,
+        clampByte(r),
+        clampByte(g),
+        clampByte(b),
+        clampRange(rounds, 1, 8, 'Rounds'),
+        clampRange(step10ms, 1, 100, 'Step time'),
+        0,
+        0,
+      ]);
+    }
+
+    function decodeCommand(bytes) {
+      if (!(bytes instanceof Uint8Array) || bytes.length !== 8) {
+        return 'Invalid payload';
+      }
+
+      switch (bytes[0]) {
+        case 0x00:
+          return 'Clear all LEDs';
+        case 0x01:
+          return `Set LED ${bytes[1]} to rgb(${bytes[2]}, ${bytes[3]}, ${bytes[4]})`;
+        case 0x02:
+          return `Fill all LEDs with rgb(${bytes[1]}, ${bytes[2]}, ${bytes[3]})`;
+        case 0x03:
+          return `Blink rgb(${bytes[1]}, ${bytes[2]}, ${bytes[3]}) repeats=${bytes[4]} on=${bytes[5] * 100}ms off=${bytes[6] * 100}ms`;
+        case 0x04:
+          return `Chase rgb(${bytes[1]}, ${bytes[2]}, ${bytes[3]}) rounds=${bytes[4]} step=${bytes[5] * 10}ms`;
+        default:
+          return `Unknown opcode 0x${hex(bytes[0])}`;
+      }
+    }
+
+    async function connect() {
+      ensureBluetoothSupport();
+
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [LED_SERVICE_UUID] }],
+      });
+
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(LED_SERVICE_UUID);
+      characteristic = await service.getCharacteristic(LED_CHARACTERISTIC_UUID);
+
+      deviceName.textContent = device.name || '(unnamed device)';
+      setStatus('Connected');
+      setConnectedUi(true);
+      log(`Connected to ${deviceName.textContent}`);
+    }
+
+    function onDisconnected() {
+      characteristic = null;
+      setConnectedUi(false);
+      setStatus('Disconnected');
+      log('Device disconnected');
+    }
+
+    async function disconnect() {
+      if (device?.gatt?.connected) {
+        device.gatt.disconnect();
+      } else {
+        onDisconnected();
+      }
+    }
+
+    async function writeCommand(bytes) {
+      if (!characteristic) {
+        throw new Error('Not connected');
+      }
+
+      if (!(bytes instanceof Uint8Array) || bytes.length !== 8) {
+        throw new Error('Command must be a Uint8Array(8)');
+      }
+
+      await characteristic.writeValue(bytes);
+      const summary = decodeCommand(bytes);
+      lastCommand.textContent = `${summary} (${formatBytes(bytes)})`;
+      log(`Wrote command: ${summary}`);
+    }
+
+    async function readLastCommand() {
+      if (!characteristic) {
+        throw new Error('Not connected');
+      }
+
+      const value = await characteristic.readValue();
+      const bytes = new Uint8Array(value.buffer.slice(0, 8));
+      const summary = decodeCommand(bytes);
+      lastCommand.textContent = `${summary} (${formatBytes(bytes)})`;
+      log(`Read command: ${summary}`);
+    }
+
+    async function run(action) {
+      try {
+        await action();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setStatus(`Error: ${message}`);
+        log(`Error: ${message}`);
+      }
+    }
+
+    connectButton.addEventListener('click', () => {
+      run(async () => {
+        setStatus('Connecting...');
+        await connect();
+      });
+    });
+
+    disconnectButton.addEventListener('click', () => {
+      run(async () => {
+        await disconnect();
+      });
+    });
+
+    readButton.addEventListener('click', () => {
+      run(async () => {
+        await readLastCommand();
+      });
+    });
+
+    clearButton.addEventListener('click', () => {
+      run(async () => {
+        await writeCommand(clearAll());
+      });
+    });
+
+    document.getElementById('fillForm').addEventListener('submit', (event) => {
+      event.preventDefault();
+      run(async () => {
+        const rgb = colorToRgb(document.getElementById('fillColor').value);
+        await writeCommand(fill(rgb.r, rgb.g, rgb.b));
+      });
+    });
+
+    document.getElementById('singleLedForm').addEventListener('submit', (event) => {
+      event.preventDefault();
+      run(async () => {
+        const index = document.getElementById('singleLedIndex').value;
+        const rgb = colorToRgb(document.getElementById('singleLedColor').value);
+        await writeCommand(setLed(index, rgb.r, rgb.g, rgb.b));
+      });
+    });
+
+    document.getElementById('blinkForm').addEventListener('submit', (event) => {
+      event.preventDefault();
+      run(async () => {
+        const rgb = colorToRgb(document.getElementById('blinkColor').value);
+        const repeats = document.getElementById('blinkRepeats').value;
+        const onTime = document.getElementById('blinkOn').value;
+        const offTime = document.getElementById('blinkOff').value;
+        await writeCommand(blink(rgb.r, rgb.g, rgb.b, repeats, onTime, offTime));
+      });
+    });
+
+    document.getElementById('chaseForm').addEventListener('submit', (event) => {
+      event.preventDefault();
+      run(async () => {
+        const rgb = colorToRgb(document.getElementById('chaseColor').value);
+        const rounds = document.getElementById('chaseRounds').value;
+        const step = document.getElementById('chaseStep').value;
+        await writeCommand(chase(rgb.r, rgb.g, rgb.b, rounds, step));
+      });
+    });
+
+    setConnectedUi(false);
+    if (!navigator.bluetooth) {
+      setStatus('Web Bluetooth not available');
+      log('This browser or origin does not support Web Bluetooth.');
+    }
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').then(() => {
+          log('Service worker registered');
+        }).catch((error) => {
+          log(`Service worker registration failed: ${error.message}`);
+        });
+      });
+    }
+  </script>
+</body>
+</html>

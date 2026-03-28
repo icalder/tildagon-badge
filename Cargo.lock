@@ -505,6 +505,7 @@ dependencies = [
  "bt-hci",
  "embassy-executor",
  "embassy-net",
+ "embassy-sync 0.7.2",
  "embassy-sync 0.8.0",
  "embassy-time",
  "esp-alloc",
