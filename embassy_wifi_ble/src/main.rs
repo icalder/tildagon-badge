@@ -12,10 +12,10 @@ use core::cell::RefCell;
 use core::str;
 use core::sync::atomic::{AtomicU32, Ordering};
 use embassy_executor::Spawner;
-use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
-use embassy_sync::mutex::Mutex as AsyncMutex;
 use embassy_net::Runner as NetRunner;
-use embassy_time::{Duration, Timer};
+use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
+use embassy_sync::mutex::Mutex as AsyncMutex;
+use embassy_time::{Duration, Instant, Timer};
 use embedded_graphics::mono_font::{MonoTextStyle, MonoTextStyleBuilder, ascii::FONT_8X13};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
@@ -29,11 +29,11 @@ use esp_radio::wifi::{
     ClientConfig, Config as WifiConfig, ScanConfig as WifiScanConfig, WifiController, WifiDevice,
 };
 use static_cell::StaticCell;
-use tildagon::battery::Battery;
+use tildagon::battery::{Battery, BatteryState};
 use tildagon::buttons::{Button, ButtonEvent, TypedButtons};
 use tildagon::display::TildagonDisplay;
-use tildagon::i2c::{SharedI2cBus, system_i2c_bus, top_i2c_bus};
 use tildagon::hardware::TildagonHardware;
+use tildagon::i2c::{SharedI2cBus, system_i2c_bus, top_i2c_bus};
 use trouble_host::advertise::AdStructure;
 use trouble_host::central::Central;
 use trouble_host::prelude::*;
@@ -186,18 +186,39 @@ async fn ble_scan_task(central: Central<'static, BleExternalController, DefaultP
 }
 
 #[embassy_executor::task]
-async fn display_task(mut display: TildagonDisplay<'static>) {
+async fn display_task(
+    mut display: TildagonDisplay<'static>,
+    mut battery: Battery<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
+) {
     println!("Display task started");
     let mut frame = 0u32;
     let mut previous = None;
+    let mut battery_state: Option<BatteryState> = None;
+    let mut next_battery_refresh = Instant::now();
 
     if let Err(e) = render_display_background(&mut display) {
         println!("Display background render error: {:?}", e);
     }
 
     loop {
+        if Instant::now() >= next_battery_refresh {
+            let battery_refresh_interval = match battery.read().await {
+                Ok(state) if state.vbat_volts > 0.0 => {
+                    battery_state = Some(state);
+                    Duration::from_secs(30)
+                }
+                Ok(_) => Duration::from_secs(1),
+                Err(e) => {
+                    println!("Battery read error: {:?}", e);
+                    Duration::from_secs(1)
+                }
+            };
+
+            next_battery_refresh = Instant::now() + battery_refresh_interval;
+        }
+
         let current = frame_state(frame);
-        if let Err(e) = render_display_frame(&mut display, previous, current) {
+        if let Err(e) = render_display_frame(&mut display, previous, current, battery_state) {
             println!("Display render error: {:?}", e);
         }
 
@@ -209,14 +230,26 @@ async fn display_task(mut display: TildagonDisplay<'static>) {
 
 type DisplayDrawError = <TildagonDisplay<'static> as DrawTarget>::Error;
 
-fn render_display_background(display: &mut TildagonDisplay<'static>) -> Result<(), DisplayDrawError> {
+fn render_display_background(
+    display: &mut TildagonDisplay<'static>,
+) -> Result<(), DisplayDrawError> {
     let title_style = MonoTextStyle::new(&FONT_8X13, TEXT);
 
     display.clear(BG)?;
-    Text::with_alignment("WiFi BLE LCD", Point::new(120, 34), title_style, Alignment::Center)
-        .draw(display)?;
-    Text::with_alignment("live radio demo", Point::new(120, 52), title_style, Alignment::Center)
-        .draw(display)?;
+    Text::with_alignment(
+        "WiFi BLE LCD",
+        Point::new(120, 34),
+        title_style,
+        Alignment::Center,
+    )
+    .draw(display)?;
+    Text::with_alignment(
+        "battery: --.-V",
+        Point::new(120, 52),
+        title_style,
+        Alignment::Center,
+    )
+    .draw(display)?;
     Text::new("WiFi", Point::new(26, 126), title_style).draw(display)?;
     Text::new("BLE", Point::new(26, 146), title_style).draw(display)?;
     Ok(())
@@ -226,8 +259,10 @@ fn frame_state(frame: u32) -> FrameState {
     FrameState {
         circle_center_x: ping_pong(frame, 42, 198, 20),
         triangle_tip_y: ping_pong(frame.wrapping_add(10), 154, 188, 24),
-        wifi_bar_width: (WIFI_NETWORK_COUNT.load(Ordering::Relaxed).saturating_mul(7)).clamp(10, BAR_MAX_WIDTH),
-        ble_bar_width: (BLE_SEEN_COUNT.load(Ordering::Relaxed).saturating_mul(7)).clamp(10, BAR_MAX_WIDTH),
+        wifi_bar_width: (WIFI_NETWORK_COUNT.load(Ordering::Relaxed).saturating_mul(7))
+            .clamp(10, BAR_MAX_WIDTH),
+        ble_bar_width: (BLE_SEEN_COUNT.load(Ordering::Relaxed).saturating_mul(7))
+            .clamp(10, BAR_MAX_WIDTH),
         accent: match frame % 3 {
             0 => Rgb565::new(31, 0, 0),
             1 => Rgb565::new(0, 63, 0),
@@ -240,6 +275,7 @@ fn render_display_frame(
     display: &mut TildagonDisplay<'static>,
     previous: Option<FrameState>,
     current: FrameState,
+    battery_state: Option<tildagon::battery::BatteryState>,
 ) -> Result<(), DisplayDrawError> {
     let text_style = MonoTextStyleBuilder::new()
         .font(&FONT_8X13)
@@ -271,6 +307,17 @@ fn render_display_frame(
     Text::with_alignment(
         &format!("BLE seen: {ble_seen}"),
         Point::new(120, 110),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)?;
+    let battery_text = match battery_state {
+        Some(state) => format!("battery: {:.2}V", state.vbat_volts),
+        None => format!("battery: --.-V"),
+    };
+    Text::with_alignment(
+        battery_text.as_str(),
+        Point::new(120, 52),
         text_style,
         Alignment::Center,
     )
@@ -338,14 +385,13 @@ async fn main(spawner: Spawner) {
 
     static DISPLAY_BUFFER: StaticCell<[u8; 4096]> = StaticCell::new();
     let display_buffer = DISPLAY_BUFFER.init([0u8; 4096]);
-    match tildagon.init_display(display_buffer) {
-        Ok(display) => {
-            spawner
-                .spawn(display_task(display))
-                .expect("Failed to spawn display_task");
+    let display = match tildagon.init_display(display_buffer) {
+        Ok(display) => Some(display),
+        Err(e) => {
+            println!("Display init failed: {:?}", e);
+            None
         }
-        Err(e) => println!("Display init failed: {:?}", e),
-    }
+    };
 
     let mut radio = tildagon.init_radio().expect("Tildagon radio init failed");
 
@@ -356,6 +402,15 @@ async fn main(spawner: Spawner) {
     let mut button_int = tildagon.button_int;
     let mut battery = Battery::new(system_i2c_bus(shared_i2c));
     let mut buttons = TypedButtons::new(system_i2c_bus(shared_i2c), top_i2c_bus(shared_i2c));
+
+    if let Some(display) = display {
+        spawner
+            .spawn(display_task(
+                display,
+                Battery::new(system_i2c_bus(shared_i2c)),
+            ))
+            .expect("Failed to spawn display_task");
+    }
 
     // WiFi Init
     let (wifi_controller, _wifi_interfaces) = radio
