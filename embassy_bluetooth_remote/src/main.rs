@@ -40,6 +40,10 @@ const BLE_NAME_CAPACITY: usize = 13;
 const MAX_BLINK_REPEATS: u8 = 10;
 const MAX_CHASE_ROUNDS: u8 = 8;
 const MAX_PATTERN_DELAY_UNITS: u8 = 100;
+const BLE_CONN_INTERVAL_MIN_US: u64 = 10_000;
+const BLE_CONN_INTERVAL_MAX_US: u64 = 10_000;
+const BLE_CONN_MAX_LATENCY: u16 = 0;
+const BLE_CONN_SUPERVISION_TIMEOUT_MS: u64 = 5_000;
 const LED_SERVICE_UUID_ADV: [u8; 16] = [
     0xf0, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34,
     0x12,
@@ -201,6 +205,36 @@ fn encode_advertisement(name: &str) -> Result<([u8; 31], usize, [u8; 31], usize)
     Ok((adv_data, adv_len, scan_data, scan_len))
 }
 
+fn preferred_connection_params() -> ConnectParams {
+    ConnectParams {
+        min_connection_interval: Duration::from_micros(BLE_CONN_INTERVAL_MIN_US),
+        max_connection_interval: Duration::from_micros(BLE_CONN_INTERVAL_MAX_US),
+        max_latency: BLE_CONN_MAX_LATENCY,
+        min_event_length: Duration::from_millis(0),
+        max_event_length: Duration::from_millis(0),
+        supervision_timeout: Duration::from_millis(BLE_CONN_SUPERVISION_TIMEOUT_MS),
+    }
+}
+
+async fn request_preferred_connection_params(
+    stack: &'static BleStack,
+    conn: &GattConnection<'static, 'static, DefaultPacketPool>,
+) {
+    let params = preferred_connection_params();
+    println!(
+        "[BLE] requesting conn params: interval={:?}..{:?} latency={} timeout={:?}",
+        params.min_connection_interval,
+        params.max_connection_interval,
+        params.max_latency,
+        params.supervision_timeout
+    );
+
+    match conn.raw().update_connection_params(stack, &params).await {
+        Ok(()) => println!("[BLE] connection parameter update requested"),
+        Err(e) => println!("[BLE] connection parameter update request failed: {:?}", e),
+    }
+}
+
 #[embassy_executor::task]
 async fn ble_runner_task(mut runner: BleRunner) {
     loop {
@@ -333,6 +367,7 @@ async fn button_handler_task(
 }
 
 async fn gatt_connection_task(
+    _stack: &'static BleStack,
     server: &'static BadgeServer<'static>,
     conn: &GattConnection<'static, 'static, DefaultPacketPool>,
     led_pub: &LedPublisher,
@@ -388,8 +423,21 @@ async fn gatt_connection_task(
                     conn_interval, peripheral_latency, supervision_timeout
                 );
             }
-            GattConnectionEvent::RequestConnectionParams { .. }
-            | GattConnectionEvent::DataLengthUpdated { .. } => {}
+            GattConnectionEvent::RequestConnectionParams {
+                min_connection_interval,
+                max_connection_interval,
+                max_latency,
+                supervision_timeout,
+            } => {
+                println!(
+                    "[BLE] remote requested conn params: interval={:?}..{:?} latency={} timeout={:?}",
+                    min_connection_interval,
+                    max_connection_interval,
+                    max_latency,
+                    supervision_timeout
+                );
+            }
+            GattConnectionEvent::DataLengthUpdated { .. } => {}
         }
     }
 
@@ -399,6 +447,7 @@ async fn gatt_connection_task(
 #[embassy_executor::task]
 async fn ble_peripheral_task(
     mut peripheral: BlePeripheral,
+    stack: &'static BleStack,
     server: &'static BadgeServer<'static>,
     led_pub: LedPublisher,
     name: &'static str,
@@ -452,8 +501,9 @@ async fn ble_peripheral_task(
         };
 
         println!("[BLE] connection established");
+        request_preferred_connection_params(stack, &conn).await;
 
-        if let Err(e) = gatt_connection_task(server, &conn, &led_pub).await {
+        if let Err(e) = gatt_connection_task(stack, server, &conn, &led_pub).await {
             println!("[GATT] connection task error: {:?}", e);
         }
         led_pub.publish_immediate(LedCommand::Clear);
@@ -544,6 +594,7 @@ async fn main(spawner: Spawner) {
     spawner
         .spawn(ble_peripheral_task(
             peripheral,
+            ble_stack,
             server,
             led_channel.publisher().unwrap(),
             badge_name.as_str(),
