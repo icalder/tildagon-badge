@@ -16,7 +16,7 @@ use embassy_net::Runner as NetRunner;
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 use embassy_sync::mutex::Mutex as AsyncMutex;
 use embassy_time::{Duration, Instant, Timer};
-use embedded_graphics::mono_font::{MonoTextStyle, MonoTextStyleBuilder, ascii::FONT_8X13};
+use embedded_graphics::mono_font::{MonoTextStyle, ascii::FONT_8X13};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{Circle, PrimitiveStyle, Rectangle, Triangle};
@@ -31,7 +31,8 @@ use esp_radio::wifi::{
 use static_cell::StaticCell;
 use tildagon::battery::{Battery, BatteryState};
 use tildagon::buttons::{Button, ButtonEvent, TypedButtons};
-use tildagon::display::TildagonDisplay;
+use tildagon::display::{StripeBuffer, TildagonDisplay, render_with_stripes};
+use tildagon::draw_stripe;
 use tildagon::hardware::TildagonHardware;
 use tildagon::i2c::{SharedI2cBus, system_i2c_bus, top_i2c_bus};
 use trouble_host::advertise::AdStructure;
@@ -62,6 +63,22 @@ struct FrameState {
     wifi_bar_width: u32,
     ble_bar_width: u32,
     accent: Rgb565,
+}
+
+fn frame_state(frame: u32) -> FrameState {
+    FrameState {
+        circle_center_x: ping_pong(frame, 42, 198, 20),
+        triangle_tip_y: ping_pong(frame.wrapping_add(10), 154, 188, 24),
+        wifi_bar_width: (WIFI_NETWORK_COUNT.load(Ordering::Relaxed).saturating_mul(7))
+            .clamp(10, BAR_MAX_WIDTH),
+        ble_bar_width: (BLE_SEEN_COUNT.load(Ordering::Relaxed).saturating_mul(7))
+            .clamp(10, BAR_MAX_WIDTH),
+        accent: match frame % 3 {
+            0 => Rgb565::new(31, 0, 0),
+            1 => Rgb565::new(0, 63, 0),
+            _ => Rgb565::new(0, 0, 31),
+        },
+    }
 }
 
 #[embassy_executor::task]
@@ -185,6 +202,15 @@ async fn ble_scan_task(central: Central<'static, BleExternalController, DefaultP
     }
 }
 
+struct UIStrings<'a> {
+    battery: &'a str,
+    wifi_scans: &'a str,
+    wifi_networks: &'a str,
+    ble_seen: &'a str,
+}
+
+const TEXT_STYLE: MonoTextStyle<Rgb565> = MonoTextStyle::new(&FONT_8X13, TEXT);
+
 #[embassy_executor::task]
 async fn display_task(
     mut display: TildagonDisplay<'static>,
@@ -192,13 +218,22 @@ async fn display_task(
 ) {
     println!("Display task started");
     let mut frame = 0u32;
-    let mut previous = None;
     let mut battery_state: Option<BatteryState> = None;
     let mut next_battery_refresh = Instant::now();
 
-    if let Err(e) = render_display_background(&mut display) {
-        println!("Display background render error: {:?}", e);
-    }
+    static STRIPE_BUFFER: StaticCell<StripeBuffer> = StaticCell::new();
+    let stripe_buffer = STRIPE_BUFFER.init(StripeBuffer::new(BG));
+
+    // Cache strings to avoid frequent allocations and heavy stack usage from format!
+    let mut battery_str = format!("battery: --.-V");
+    let mut wifi_scans_str = format!("WiFi scans: 0");
+    let mut wifi_networks_str = format!("Networks: 0");
+    let mut ble_seen_str = format!("BLE seen: 0");
+
+    let mut last_wifi_scans = u32::MAX;
+    let mut last_wifi_networks = u32::MAX;
+    let mut last_ble_seen = u32::MAX;
+    let mut last_battery_v = -1.0f32;
 
     loop {
         if Instant::now() >= next_battery_refresh {
@@ -217,145 +252,116 @@ async fn display_task(
             next_battery_refresh = Instant::now() + battery_refresh_interval;
         }
 
+        // Update cached strings only when values change
+        let scans = WIFI_SCAN_COUNT.load(Ordering::Relaxed);
+        if scans != last_wifi_scans {
+            wifi_scans_str = format!("WiFi scans: {scans}");
+            last_wifi_scans = scans;
+        }
+
+        let networks = WIFI_NETWORK_COUNT.load(Ordering::Relaxed);
+        if networks != last_wifi_networks {
+            wifi_networks_str = format!("Networks: {networks}");
+            last_wifi_networks = networks;
+        }
+
+        let ble_seen = BLE_SEEN_COUNT.load(Ordering::Relaxed);
+        if ble_seen != last_ble_seen {
+            ble_seen_str = format!("BLE seen: {ble_seen}");
+            last_ble_seen = ble_seen;
+        }
+
+        let battery_v = battery_state.map(|s| s.vbat_volts).unwrap_or(-1.0);
+        if (battery_v - last_battery_v).abs() > 0.01 {
+            battery_str = if battery_v >= 0.0 {
+                // Avoid heavy floating point formatting logic on the stack
+                let v = (battery_v * 100.0) as u32;
+                format!("battery: {}.{:02}V", v / 100, v % 100)
+            } else {
+                format!("battery: --.-V")
+            };
+            last_battery_v = battery_v;
+        }
+
         let current = frame_state(frame);
-        if let Err(e) = render_display_frame(&mut display, previous, current, battery_state) {
+
+        let ui_strings = UIStrings {
+            battery: &battery_str,
+            wifi_scans: &wifi_scans_str,
+            wifi_networks: &wifi_networks_str,
+            ble_seen: &ble_seen_str,
+        };
+
+        if let Err(e) =
+            render_with_stripes(&mut display, stripe_buffer, BG, |target, stripe_rect| {
+                draw_ui(target, current, &ui_strings, stripe_rect)
+            })
+        {
             println!("Display render error: {:?}", e);
         }
 
-        previous = Some(current);
         frame = frame.wrapping_add(1);
-        Timer::after(Duration::from_millis(120)).await;
+        Timer::after(Duration::from_millis(30)).await;
     }
 }
 
-type DisplayDrawError = <TildagonDisplay<'static> as DrawTarget>::Error;
-
-fn render_display_background(
-    display: &mut TildagonDisplay<'static>,
-) -> Result<(), DisplayDrawError> {
-    let title_style = MonoTextStyle::new(&FONT_8X13, TEXT);
-
-    display.clear(BG)?;
-    Text::with_alignment(
-        "WiFi BLE LCD",
-        Point::new(120, 34),
-        title_style,
-        Alignment::Center,
-    )
-    .draw(display)?;
-    Text::with_alignment(
-        "battery: --.-V",
-        Point::new(120, 52),
-        title_style,
-        Alignment::Center,
-    )
-    .draw(display)?;
-    Text::new("WiFi", Point::new(26, 126), title_style).draw(display)?;
-    Text::new("BLE", Point::new(26, 146), title_style).draw(display)?;
-    Ok(())
-}
-
-fn frame_state(frame: u32) -> FrameState {
-    FrameState {
-        circle_center_x: ping_pong(frame, 42, 198, 20),
-        triangle_tip_y: ping_pong(frame.wrapping_add(10), 154, 188, 24),
-        wifi_bar_width: (WIFI_NETWORK_COUNT.load(Ordering::Relaxed).saturating_mul(7))
-            .clamp(10, BAR_MAX_WIDTH),
-        ble_bar_width: (BLE_SEEN_COUNT.load(Ordering::Relaxed).saturating_mul(7))
-            .clamp(10, BAR_MAX_WIDTH),
-        accent: match frame % 3 {
-            0 => Rgb565::new(31, 0, 0),
-            1 => Rgb565::new(0, 63, 0),
-            _ => Rgb565::new(0, 0, 31),
-        },
-    }
-}
-
-fn render_display_frame(
-    display: &mut TildagonDisplay<'static>,
-    previous: Option<FrameState>,
+fn draw_ui<D>(
+    target: &mut D,
     current: FrameState,
-    battery_state: Option<tildagon::battery::BatteryState>,
-) -> Result<(), DisplayDrawError> {
-    let text_style = MonoTextStyleBuilder::new()
-        .font(&FONT_8X13)
-        .text_color(TEXT)
-        .background_color(BG)
-        .build();
-    let wifi_scans = WIFI_SCAN_COUNT.load(Ordering::Relaxed);
-    let wifi_networks = WIFI_NETWORK_COUNT.load(Ordering::Relaxed);
-    let ble_seen = BLE_SEEN_COUNT.load(Ordering::Relaxed);
-
-    if let Some(previous) = previous {
-        draw_shapes(display, previous, BG, BG)?;
-    }
-
-    Text::with_alignment(
-        &format!("WiFi scans: {wifi_scans}"),
-        Point::new(120, 78),
-        text_style,
-        Alignment::Center,
-    )
-    .draw(display)?;
-    Text::with_alignment(
-        &format!("Networks: {wifi_networks}"),
-        Point::new(120, 94),
-        text_style,
-        Alignment::Center,
-    )
-    .draw(display)?;
-    Text::with_alignment(
-        &format!("BLE seen: {ble_seen}"),
-        Point::new(120, 110),
-        text_style,
-        Alignment::Center,
-    )
-    .draw(display)?;
-    let battery_text = match battery_state {
-        Some(state) => format!("battery: {:.2}V", state.vbat_volts),
-        None => format!("battery: --.-V"),
-    };
-    Text::with_alignment(
-        battery_text.as_str(),
-        Point::new(120, 52),
-        text_style,
-        Alignment::Center,
-    )
-    .draw(display)?;
-
-    Rectangle::new(WIFI_BAR_TOP_LEFT, Size::new(BAR_MAX_WIDTH, 10))
-        .into_styled(PrimitiveStyle::with_fill(BG))
-        .draw(display)?;
-    Rectangle::new(BLE_BAR_TOP_LEFT, Size::new(BAR_MAX_WIDTH, 10))
-        .into_styled(PrimitiveStyle::with_fill(BG))
-        .draw(display)?;
-    Rectangle::new(WIFI_BAR_TOP_LEFT, Size::new(current.wifi_bar_width, 10))
-        .into_styled(PrimitiveStyle::with_fill(WIFI))
-        .draw(display)?;
-    Rectangle::new(BLE_BAR_TOP_LEFT, Size::new(current.ble_bar_width, 10))
-        .into_styled(PrimitiveStyle::with_fill(current.accent))
-        .draw(display)?;
-    draw_shapes(display, current, SHAPE, WARN)?;
-
-    Ok(())
-}
-
-fn draw_shapes(
-    display: &mut TildagonDisplay<'static>,
-    state: FrameState,
-    circle_color: Rgb565,
-    triangle_color: Rgb565,
-) -> Result<(), DisplayDrawError> {
-    Circle::new(Point::new(state.circle_center_x - 16, 156), 32)
-        .into_styled(PrimitiveStyle::with_fill(circle_color))
-        .draw(display)?;
-    Triangle::new(
-        Point::new(120, state.triangle_tip_y),
-        Point::new(94, 224),
-        Point::new(146, 224),
-    )
-    .into_styled(PrimitiveStyle::with_fill(triangle_color))
-    .draw(display)?;
+    ui_strings: &UIStrings<'_>,
+    stripe_rect: Rectangle,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    draw_stripe!(
+        target,
+        stripe_rect,
+        Text::with_alignment(
+            "WiFi BLE LCD",
+            Point::new(120, 34),
+            TEXT_STYLE,
+            Alignment::Center,
+        ),
+        Text::with_alignment(
+            ui_strings.battery,
+            Point::new(120, 52),
+            TEXT_STYLE,
+            Alignment::Center,
+        ),
+        Text::with_alignment(
+            ui_strings.wifi_scans,
+            Point::new(120, 78),
+            TEXT_STYLE,
+            Alignment::Center,
+        ),
+        Text::with_alignment(
+            ui_strings.wifi_networks,
+            Point::new(120, 94),
+            TEXT_STYLE,
+            Alignment::Center,
+        ),
+        Text::with_alignment(
+            ui_strings.ble_seen,
+            Point::new(120, 110),
+            TEXT_STYLE,
+            Alignment::Center,
+        ),
+        Text::new("WiFi", Point::new(26, 126), TEXT_STYLE),
+        Text::new("BLE", Point::new(26, 146), TEXT_STYLE),
+        Rectangle::new(WIFI_BAR_TOP_LEFT, Size::new(current.wifi_bar_width, 10))
+            .into_styled(PrimitiveStyle::with_fill(WIFI)),
+        Rectangle::new(BLE_BAR_TOP_LEFT, Size::new(current.ble_bar_width, 10))
+            .into_styled(PrimitiveStyle::with_fill(current.accent)),
+        Circle::new(Point::new(current.circle_center_x - 16, 156), 32)
+            .into_styled(PrimitiveStyle::with_fill(SHAPE)),
+        Triangle::new(
+            Point::new(120, current.triangle_tip_y),
+            Point::new(94, 224),
+            Point::new(146, 224),
+        )
+        .into_styled(PrimitiveStyle::with_fill(WARN)),
+    );
 
     Ok(())
 }
