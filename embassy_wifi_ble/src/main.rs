@@ -207,6 +207,7 @@ struct UIStrings<'a> {
     wifi_scans: &'a str,
     wifi_networks: &'a str,
     ble_seen: &'a str,
+    fps: &'a str,
 }
 
 const TEXT_STYLE: MonoTextStyle<Rgb565> = MonoTextStyle::new(&FONT_8X13, TEXT);
@@ -229,13 +230,19 @@ async fn display_task(
     let mut wifi_scans_str = format!("WiFi scans: 0");
     let mut wifi_networks_str = format!("Networks: 0");
     let mut ble_seen_str = format!("BLE seen: 0");
+    let mut fps_str = format!("--");
 
     let mut last_wifi_scans = u32::MAX;
     let mut last_wifi_networks = u32::MAX;
     let mut last_ble_seen = u32::MAX;
     let mut last_battery_v = -1.0f32;
 
+    let mut fps_frames = 0u32;
+    let mut last_fps_update = Instant::now();
+
     loop {
+        let frame_start = Instant::now();
+
         if Instant::now() >= next_battery_refresh {
             let battery_refresh_interval = match battery.read().await {
                 Ok(state) if state.vbat_volts > 0.0 => {
@@ -283,6 +290,15 @@ async fn display_task(
             last_battery_v = battery_v;
         }
 
+        // FPS calculation
+        fps_frames += 1;
+        let now = Instant::now();
+        if now.duration_since(last_fps_update) >= Duration::from_secs(1) {
+            fps_str = format!("{fps_frames}");
+            fps_frames = 0;
+            last_fps_update = now;
+        }
+
         let current = frame_state(frame);
 
         let ui_strings = UIStrings {
@@ -290,18 +306,26 @@ async fn display_task(
             wifi_scans: &wifi_scans_str,
             wifi_networks: &wifi_networks_str,
             ble_seen: &ble_seen_str,
+            fps: &fps_str,
         };
 
-        if let Err(e) =
-            render_with_stripes(&mut display, stripe_buffer, BG, |target, stripe_rect| {
-                draw_ui(target, current, &ui_strings, stripe_rect)
-            })
-        {
+        if let Err(e) = render_with_stripes(&mut display, stripe_buffer, BG, |target, stripe_rect| {
+            draw_ui(target, current, &ui_strings, stripe_rect)
+        }) {
             println!("Display render error: {:?}", e);
         }
 
         frame = frame.wrapping_add(1);
-        Timer::after(Duration::from_millis(30)).await;
+
+        // Target ~30fps, but account for render time
+        let elapsed = frame_start.elapsed();
+        let target_period = Duration::from_millis(33);
+        if elapsed < target_period {
+            Timer::after(target_period - elapsed).await;
+        } else {
+            // Yield if we're running behind
+            Timer::after(Duration::from_millis(1)).await;
+        }
     }
 }
 
@@ -314,9 +338,7 @@ fn draw_ui<D>(
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    draw_stripe!(
-        target,
-        stripe_rect,
+    draw_stripe!(target, stripe_rect,
         Text::with_alignment(
             "WiFi BLE LCD",
             Point::new(120, 34),
@@ -349,6 +371,8 @@ where
         ),
         Text::new("WiFi", Point::new(26, 126), TEXT_STYLE),
         Text::new("BLE", Point::new(26, 146), TEXT_STYLE),
+        Text::new(ui_strings.fps, Point::new(160, 210), TEXT_STYLE),
+
         Rectangle::new(WIFI_BAR_TOP_LEFT, Size::new(current.wifi_bar_width, 10))
             .into_styled(PrimitiveStyle::with_fill(WIFI)),
         Rectangle::new(BLE_BAR_TOP_LEFT, Size::new(current.ble_bar_width, 10))
@@ -383,6 +407,8 @@ fn ping_pong(frame: u32, min: i32, max: i32, period: u32) -> i32 {
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
     println!("Init!");
+    // Note: The original firmware runs at 240MHz:
+    // let config = esp_hal::Config::default().with_cpu_clock(esp_hal::clock::CpuClock::_240MHz);
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
     let mut tildagon = TildagonHardware::new(peripherals)
