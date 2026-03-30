@@ -60,7 +60,8 @@ pub fn init<'a>(
 ) -> Result<TildagonDisplay<'a>, DisplayInitError> {
     // Note: dma_buffers! uses static storage internally in esp-hal to provide 'static lifetimes.
     // This means this function should only be called once to avoid aliasing static mut.
-    let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = esp_hal::dma_buffers!(32000);
+    // 20480 bytes comfortably covers one display stripe (240 * 40 * 2 = 19200 bytes).
+    let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = esp_hal::dma_buffers!(20480);
 
     let dma_rx_buf =
         DmaRxBuf::new(rx_descriptors, rx_buffer).map_err(|_| DisplayInitError::DmaRxBuffer)?;

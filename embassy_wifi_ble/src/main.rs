@@ -5,7 +5,7 @@ extern crate alloc;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-use alloc::{collections::BTreeSet, format};
+use alloc::{collections::{BTreeSet, VecDeque}, format};
 use bt_hci::controller::ExternalController;
 use bt_hci::param::LeAdvReportsIter;
 use core::cell::RefCell;
@@ -42,8 +42,51 @@ use trouble_host::prelude::*;
 static WIFI_SCAN_COUNT: AtomicU32 = AtomicU32::new(0);
 static WIFI_NETWORK_COUNT: AtomicU32 = AtomicU32::new(0);
 static BLE_SEEN_COUNT: AtomicU32 = AtomicU32::new(0);
-static BLE_SEEN_DEVICES: Mutex<CriticalSectionRawMutex, RefCell<BTreeSet<[u8; 6]>>> =
-    Mutex::new(RefCell::new(BTreeSet::new()));
+
+/// LRU-evicting set of BLE device addresses.
+///
+/// Tracks up to `CAPACITY` unique addresses. When full and a new address arrives,
+/// the least-recently-seen address is evicted. Re-seeing a known address refreshes
+/// its position so actively-advertising devices are never evicted while present.
+struct LruBleDevices {
+    order: VecDeque<[u8; 6]>,
+    set: BTreeSet<[u8; 6]>,
+}
+
+impl LruBleDevices {
+    const CAPACITY: usize = 256;
+
+    const fn new() -> Self {
+        Self {
+            order: VecDeque::new(),
+            set: BTreeSet::new(),
+        }
+    }
+
+    /// Insert an address. Returns `true` if the address was not already tracked.
+    fn insert(&mut self, addr: [u8; 6]) -> bool {
+        if self.set.contains(&addr) {
+            // Refresh: move to back so it isn't evicted while still active.
+            if let Some(pos) = self.order.iter().position(|a| *a == addr) {
+                self.order.remove(pos);
+                self.order.push_back(addr);
+            }
+            false
+        } else {
+            if self.order.len() >= Self::CAPACITY {
+                if let Some(evicted) = self.order.pop_front() {
+                    self.set.remove(&evicted);
+                }
+            }
+            self.order.push_back(addr);
+            self.set.insert(addr);
+            true
+        }
+    }
+}
+
+static BLE_SEEN_DEVICES: Mutex<CriticalSectionRawMutex, RefCell<LruBleDevices>> =
+    Mutex::new(RefCell::new(LruBleDevices::new()));
 
 const BG: Rgb565 = Rgb565::new(0, 0, 0);
 const TEXT: Rgb565 = Rgb565::new(24, 48, 24);

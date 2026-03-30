@@ -10,7 +10,11 @@ use static_cell::StaticCell;
 use crate::{Error, resources::RadioResources};
 
 /// Default internal-RAM heap reservation used before initializing the radio stack.
-pub const DEFAULT_RADIO_HEAP_SIZE: usize = 128 * 1024;
+///
+/// Peak observed usage is ~83 KB (WiFi + BLE scanning). 112 KB leaves ~30 KB headroom
+/// while still freeing 16 KB of internal SRAM compared to the original 128 KB, giving
+/// the task stack adequate room for LED driver construction and future features.
+pub const DEFAULT_RADIO_HEAP_SIZE: usize = 112 * 1024;
 
 static RADIO_CELL: StaticCell<Controller<'static>> = StaticCell::new();
 static RADIO_HEAP_INITIALIZED: AtomicBool = AtomicBool::new(false);

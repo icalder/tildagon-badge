@@ -214,7 +214,77 @@ For display code, the most practical pattern is:
 - refresh immediately when the shared interrupt fires and a power event is suspected
 - also poll slowly (for example every `2-10s`) for on-screen battery information
 
-## Buttons
+## Memory Layout (Internal SRAM)
+
+The ESP32-S3 has a single pool of internal SRAM shared between all static allocations **and** the task stack. There is no separate stack region — the stack occupies whatever SRAM is left after `.bss`/`.data` sections are placed.
+
+### Major static consumers (embassy_wifi_ble)
+
+| Allocation | Size | Defined in |
+|---|---|---|
+| Radio heap (`DEFAULT_RADIO_HEAP_SIZE`) | 112 KB (tunable) | `tildagon/src/radio.rs` |
+| SPI DMA buffers (`dma_buffers!`) | 20,480 B (tunable) | `tildagon/src/display.rs` |
+| `StripeBuffer` (StaticCell) | 19,200 B (240×40×2) | `embassy_wifi_ble/src/main.rs` |
+| SPI interface buffer (`DISPLAY_BUFFER`) | 4,096 B | `embassy_wifi_ble/src/main.rs` |
+
+Everything above lives in BSS; every byte claimed there shrinks the stack by one byte.
+
+### Measured values (release build, WiFi + BLE scanning active)
+
+| Measurement point | Stack used | Stack free | Heap used | Heap free |
+|---|---|---|---|---|
+| `main-start` | 5,216 B | 57,268 B | — | — |
+| `after-radio-init` | 5,216 B | 57,268 B | 148 B | ~114,500 B |
+| `display-init` (before loop) | 20,032 B | 42,452 B | ~82,352 B | ~32,300 B |
+| `display-loop` (steady state) | 20,032 B | 42,452 B | ~82,600 B | ~32,000 B |
+
+Total stack size at these settings: **62,484 B** (~61 KB).  
+The embassy thread-mode executor is cooperative — all tasks share this one stack.
+
+The jump from `main-start` to `display-init` (≈14,800 B) is the display task frame before its first `.await`, which includes the `TildagonDisplay` parameter on the stack. Heap jumps from 148 B to ~82 KB at `display-init` because BLE/WiFi stacks allocate their runtime structures on first use.
+
+### Tuning
+
+`DEFAULT_RADIO_HEAP_SIZE` (`tildagon/src/radio.rs`) and the `dma_buffers!` size (`tildagon/src/display.rs`) are the two knobs. Reducing either grows the stack by the same amount. The radio heap **cannot** safely drop much below 112 KB with WiFi + BLE coex active — peak observed usage is ~83 KB, leaving ~32 KB headroom for BLE scan results and transient WiFi scan `Vec` allocations.
+
+### Stack / heap diagnostic snippet
+
+```rust
+#![feature(asm_experimental_arch)]
+
+unsafe extern "C" {
+    static _stack_end_cpu0: u32;
+    static _stack_start_cpu0: u32;
+}
+
+#[inline(never)]
+fn log_stack(label: &str) {
+    let sp: u32;
+    unsafe { core::arch::asm!("mov {}, a1", out(reg) sp) }
+    let top = core::ptr::addr_of!(_stack_start_cpu0) as u32;
+    let bot = core::ptr::addr_of!(_stack_end_cpu0) as u32;
+    println!("[STACK:{label}] total={} used={} free={}", top - bot, top - sp, sp - bot);
+}
+
+#[inline(never)]
+fn log_heap(label: &str) {
+    println!("[HEAP:{label}] {}", esp_alloc::HEAP.stats());
+}
+```
+
+Call `log_stack` / `log_heap` at key startup points and periodically inside the display loop to confirm headroom.
+
+### ⚠️ Stack overflow symptom
+
+The `esp-rtos` scheduler enables hardware stack-overflow detection by default. Crossing the stack guard triggers:
+
+```
+Detected a write to the stack guard value on ProCpu
+```
+
+followed by a hang or panic. If this appears, reduce static allocations (primarily `DEFAULT_RADIO_HEAP_SIZE`) to give the stack more room, and audit large locals or deep call chains in async tasks.
+
+
 
 The Tildagon badge has **six buttons arranged around the hexagon shape**, connected via the AW9523B I/O expanders at addresses `0x59` and `0x5a`. These buttons provide user input for applications.
 
