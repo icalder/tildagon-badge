@@ -331,34 +331,21 @@ let button_e_pressed = (port0_59[0] & (1 << 2)) == 0;  // Bit 2
 let button_f_pressed = (port0_59[0] & (1 << 3)) == 0;  // Bit 3
 ```
 
-### Button Interrupt Handling
+### Button Detection
 
-The badge uses a **shared interrupt line** for all button changes:
+The hardware provides a shared interrupt line on `GPIO10` that asserts when any button changes state, but in practice this line is also shared with the FUSB302B PD controllers and BQ25895, making it unreliable as a sole trigger — especially during radio activity. The firmware therefore uses **polling**.
 
-- **Interrupt GPIO:** `GPIO_NUM_10` (ESP32-S3 native GPIO)
-- **Interrupt Type:** Falling edge (`GPIO_INTR_NEGEDGE`) — triggered when any button is pressed
-- **Handling:** When GPIO 10 goes LOW, poll all three expanders (0x58, 0x59, 0x5a) via I2C to determine which button(s) changed state
+**Polling approach (used by this firmware):**
+- A background task reads port 0 of both `0x59` and `0x5a` every 20ms
+- Compares with the previous read to detect press (HIGH→LOW) or release (LOW→HIGH)
+- Publishes `ButtonEvent::Pressed` / `ButtonEvent::Released` to a `PubSubChannel`
+- Callers subscribe to the channel; the 20ms poll interval naturally debounces contact bounce
 
-**Two implementation approaches:**
-
-1. **Interrupt-driven (Recommended for responsiveness):**
-   - Set up an interrupt handler on GPIO 10
-   - When triggered, read port 0 from both `0x59` and `0x5a`
-   - Compare with previous state to detect press (HIGH→LOW) or release (LOW→HIGH)
-   - Generate application events based on changes
-
-2. **Polling (Simpler for Embassy/async):**
-   - Periodically read input registers `0x00` from both `0x59` and `0x5a` (every 20-50ms)
-   - Compare with previous state to detect changes
-   - Store last state and check for transitions
+Note: all GPIO expander interrupts are masked during hardware init (`0xFF, 0xFF` to register `0x06` on each chip), so the shared `GPIO10` line is not used for buttons.
 
 ### Debouncing
 
-Buttons naturally have contact bounce. Recommended debounce strategies:
-
-- **Polling approach:** 20-50ms poll interval naturally debounces mechanical bounce
-- **Interrupt-driven approach:** After detecting a state change, ignore interrupts for 20ms before re-enabling to filter bounce
-- **Software debounce:** Require 2-3 consecutive reads showing the same new state before confirming a transition
+The 20ms poll interval naturally suppresses contact bounce without additional software debounce logic. If tighter response is needed, reduce the interval (minimum ~10ms before I2C bus contention becomes a concern during WiFi/BLE activity).
 
 ### Hexagon Expansion Integration
 
