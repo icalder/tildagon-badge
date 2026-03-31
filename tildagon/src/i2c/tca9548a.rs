@@ -11,7 +11,7 @@ use core::marker::ConstParamTy;
 
 use embedded_hal_async::i2c::{ErrorType, I2c, Operation};
 
-use super::SharedI2cBus;
+use super::{SharedI2cBus, SharingRawMutex};
 
 /// One of the eight branches of the TCA9548A I2C multiplexer.
 ///
@@ -46,9 +46,22 @@ pub struct Bus<BUS: 'static, const N: BusNumber> {
     mux_address: u8,
 }
 
-impl<BUS: 'static, const N: BusNumber> Bus<BUS, N> {
+impl<BUS: 'static, const N: BusNumber> Bus<BUS, N>
+where
+    BUS: I2c,
+{
     pub fn new(bus: &'static SharedI2cBus<BUS>) -> Self {
         Self { parent_bus: bus, mux_address: 0x77 }
+    }
+
+    /// Lock the underlying I2C bus and select this mux channel.
+    ///
+    /// Returns the mutex guard, allowing multiple operations to be performed
+    /// without re-selecting the mux channel or re-acquiring the lock.
+    pub async fn lock(&self) -> Result<embassy_sync::mutex::MutexGuard<'static, SharingRawMutex, BUS>, BUS::Error> {
+        let mut bus = self.parent_bus.lock().await;
+        bus.write(self.mux_address, &[N as u8]).await?;
+        Ok(bus)
     }
 }
 

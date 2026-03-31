@@ -12,18 +12,18 @@ use core::fmt::Write as _;
 
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::mutex::Mutex;
-use embassy_sync::pubsub::{PubSubChannel, Subscriber};
+use embassy_sync::mutex::Mutex as AsyncMutex;
+use embassy_sync::pubsub::Subscriber;
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use heapless::String;
 use smart_leds::colors::*;
 use static_cell::StaticCell;
 use tildagon::battery::{Battery, BatteryDiagnostics, BatteryState};
-use tildagon::buttons::{Button, ButtonEvent, TypedButtons};
+use tildagon::buttons::{Button, ButtonEvent};
 use tildagon::display::TildagonDisplay;
 use tildagon::hardware::TildagonHardware;
-use tildagon::i2c::{SharedI2cBus, system_i2c_bus, top_i2c_bus};
+use tildagon::i2c::{SharedI2cBus, system_i2c_bus};
 use tildagon::leds::{TypedLeds, NUM_LEDS};
 use tildagon::pins::Pins;
 
@@ -44,9 +44,11 @@ async fn run() {
     }
 }
 
+type ButtonSubscriber = Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 16, 4, 1>;
+
 #[embassy_executor::task]
 async fn button_monitor(
-    mut sub: Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 1, 3, 1>,
+    mut sub: ButtonSubscriber,
     mut battery: Battery<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
 ) {
     esp_println::println!("[BUTTON_MONITOR] Ready, awaiting button events...");
@@ -103,7 +105,7 @@ async fn button_monitor(
 #[embassy_executor::task]
 async fn blinky(
     mut leds: TypedLeds<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
-    mut sub: Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 1, 3, 1>,
+    mut sub: ButtonSubscriber,
 ) {
     esp_println::println!("[BLINKY] Waiting for button C press to start animation...");
 
@@ -140,7 +142,7 @@ async fn blinky(
 #[embassy_executor::task]
 async fn display_task(
     mut display: TildagonDisplay<'static>,
-    mut sub: Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 1, 3, 1>,
+    mut sub: ButtonSubscriber,
     mut battery: Battery<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
 ) {
     esp_println::println!("[DISPLAY] Task started");
@@ -359,7 +361,8 @@ fn get_button_pos(btn: Button) -> Point {
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
-    let mut tildagon = TildagonHardware::new(esp_hal::init(esp_hal::Config::default()))
+    let peripherals = esp_hal::init(esp_hal::Config::default());
+    let mut tildagon = TildagonHardware::new(peripherals)
         .await
         .expect("Tildagon hardware init failed");
 
@@ -370,8 +373,11 @@ async fn main(spawner: Spawner) {
     static SHARED_I2C: StaticCell<
         SharedI2cBus<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
     > = StaticCell::new();
-    let shared_i2c = SHARED_I2C.init(Mutex::new(tildagon.i2c.into_async()));
-    let mut button_int = tildagon.button_int;
+    let shared_i2c = SHARED_I2C.init(AsyncMutex::new(tildagon.i2c.into_async()));
+    
+    // Start the background button service
+    let button_manager = TildagonHardware::init_button_manager(&spawner, shared_i2c);
+    
     let pins = Pins::new();
 
     esp_println::println!("Boot: Tildagon hardware init done, typed shared I2C ready");
@@ -386,14 +392,9 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(run()).expect("Failed to spawn run_task");
 
-    static BUTTON_CHANNEL: StaticCell<
-        PubSubChannel<CriticalSectionRawMutex, ButtonEvent, 1, 3, 1>,
-    > = StaticCell::new();
-    let channel = BUTTON_CHANNEL.init(PubSubChannel::new());
-
     spawner
         .spawn(button_monitor(
-            channel.subscriber().unwrap(),
+            button_manager.subscribe(),
             Battery::new(system_i2c_bus(shared_i2c)),
         ))
         .expect("Failed to spawn button_monitor");
@@ -402,7 +403,7 @@ async fn main(spawner: Spawner) {
         Ok(display) => {
             let battery = Battery::new(system_i2c_bus(shared_i2c));
             spawner
-                .spawn(display_task(display, channel.subscriber().unwrap(), battery))
+                .spawn(display_task(display, button_manager.subscribe(), battery))
                 .expect("Failed to spawn display_task");
         }
         Err(e) => {
@@ -412,7 +413,7 @@ async fn main(spawner: Spawner) {
 
     let leds = TypedLeds::new(
         tildagon.rmt,
-        tildagon.led_pin,
+        tildagon.led_data_pin,
         pins.led,
         system_i2c_bus(shared_i2c),
     )
@@ -420,18 +421,11 @@ async fn main(spawner: Spawner) {
     .expect("Typed LED init failed");
 
     spawner
-        .spawn(blinky(leds, channel.subscriber().unwrap()))
+        .spawn(blinky(leds, button_manager.subscribe()))
         .expect("Failed to spawn blinky");
 
-    let publisher = channel.publisher().unwrap();
-    let mut buttons = TypedButtons::new(system_i2c_bus(shared_i2c), top_i2c_bus(shared_i2c));
-
-    esp_println::println!("[BUTTON] Entering main loop, waiting for button events...");
+    esp_println::println!("[BUTTON] All tasks started, background polling active.");
     loop {
-        match buttons.wait_for_event(&mut button_int).await {
-            Ok(Some(event)) => publisher.publish_immediate(event),
-            Ok(None) => {}
-            Err(e) => esp_println::println!("[BUTTON] Error reading buttons: {:?}", e),
-        }
+        Timer::after(Duration::from_secs(60)).await;
     }
 }

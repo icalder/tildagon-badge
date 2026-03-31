@@ -15,6 +15,7 @@ doctest = false
 embassy-executor = "0.9.1"
 embassy-time = "0.5.1"
 embassy-sync = "0.8.0"
+heapless = "0.8.0"
 esp-backtrace = { version = "0.18.1", features = ["panic-handler", "println"] }
 esp-hal = { version = "1.0.0", features = ["log-04", "unstable"] }
 esp-rtos = { version = "0.2.0", features = ["embassy", "log-04"] }

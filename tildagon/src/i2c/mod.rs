@@ -54,36 +54,36 @@ pub type HexpansionFI2cBus<BUS> = tca9548a::Bus<BUS, { BusNumber::Bus6 }>;
 // ── Factory helpers ───────────────────────────────────────────────────────────
 
 /// Create a [`SystemI2cBus`] handle from a `&'static SharedI2cBus`.
-pub fn system_i2c_bus<BUS>(bus: &'static SharedI2cBus<BUS>) -> SystemI2cBus<BUS> {
+pub fn system_i2c_bus<BUS: embedded_hal_async::i2c::I2c>(bus: &'static SharedI2cBus<BUS>) -> SystemI2cBus<BUS> {
     SystemI2cBus::new(bus)
 }
 
 /// Create a [`TopBoardI2cBus`] handle from a `&'static SharedI2cBus`.
-pub fn top_i2c_bus<BUS>(bus: &'static SharedI2cBus<BUS>) -> TopBoardI2cBus<BUS> {
+pub fn top_i2c_bus<BUS: embedded_hal_async::i2c::I2c>(bus: &'static SharedI2cBus<BUS>) -> TopBoardI2cBus<BUS> {
     TopBoardI2cBus::new(bus)
 }
 
 /// Create a [`HexpansionAI2cBus`] handle.
-pub fn hexpansion_a_i2c_bus<BUS>(bus: &'static SharedI2cBus<BUS>) -> HexpansionAI2cBus<BUS> {
+pub fn hexpansion_a_i2c_bus<BUS: embedded_hal_async::i2c::I2c>(bus: &'static SharedI2cBus<BUS>) -> HexpansionAI2cBus<BUS> {
     HexpansionAI2cBus::new(bus)
 }
 /// Create a [`HexpansionBI2cBus`] handle.
-pub fn hexpansion_b_i2c_bus<BUS>(bus: &'static SharedI2cBus<BUS>) -> HexpansionBI2cBus<BUS> {
+pub fn hexpansion_b_i2c_bus<BUS: embedded_hal_async::i2c::I2c>(bus: &'static SharedI2cBus<BUS>) -> HexpansionBI2cBus<BUS> {
     HexpansionBI2cBus::new(bus)
 }
 /// Create a [`HexpansionCI2cBus`] handle.
-pub fn hexpansion_c_i2c_bus<BUS>(bus: &'static SharedI2cBus<BUS>) -> HexpansionCI2cBus<BUS> {
+pub fn hexpansion_c_i2c_bus<BUS: embedded_hal_async::i2c::I2c>(bus: &'static SharedI2cBus<BUS>) -> HexpansionCI2cBus<BUS> {
     HexpansionCI2cBus::new(bus)
 }
 /// Create a [`HexpansionDI2cBus`] handle.
-pub fn hexpansion_d_i2c_bus<BUS>(bus: &'static SharedI2cBus<BUS>) -> HexpansionDI2cBus<BUS> {
+pub fn hexpansion_d_i2c_bus<BUS: embedded_hal_async::i2c::I2c>(bus: &'static SharedI2cBus<BUS>) -> HexpansionDI2cBus<BUS> {
     HexpansionDI2cBus::new(bus)
 }
 /// Create a [`HexpansionEI2cBus`] handle.
-pub fn hexpansion_e_i2c_bus<BUS>(bus: &'static SharedI2cBus<BUS>) -> HexpansionEI2cBus<BUS> {
+pub fn hexpansion_e_i2c_bus<BUS: embedded_hal_async::i2c::I2c>(bus: &'static SharedI2cBus<BUS>) -> HexpansionEI2cBus<BUS> {
     HexpansionEI2cBus::new(bus)
 }
 /// Create a [`HexpansionFI2cBus`] handle.
-pub fn hexpansion_f_i2c_bus<BUS>(bus: &'static SharedI2cBus<BUS>) -> HexpansionFI2cBus<BUS> {
+pub fn hexpansion_f_i2c_bus<BUS: embedded_hal_async::i2c::I2c>(bus: &'static SharedI2cBus<BUS>) -> HexpansionFI2cBus<BUS> {
     HexpansionFI2cBus::new(bus)
 }

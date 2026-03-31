@@ -5,7 +5,10 @@ extern crate alloc;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-use alloc::{collections::{BTreeSet, VecDeque}, format};
+use alloc::{
+    collections::{BTreeSet, VecDeque},
+    format,
+};
 use bt_hci::controller::ExternalController;
 use bt_hci::param::LeAdvReportsIter;
 use core::cell::RefCell;
@@ -30,11 +33,11 @@ use esp_radio::wifi::{
 };
 use static_cell::StaticCell;
 use tildagon::battery::{Battery, BatteryState};
-use tildagon::buttons::{Button, ButtonEvent, TypedButtons};
+use tildagon::buttons::{Button, ButtonEvent};
 use tildagon::display::{StripeBuffer, TildagonDisplay, render_with_stripes};
 use tildagon::draw_stripe;
 use tildagon::hardware::TildagonHardware;
-use tildagon::i2c::{SharedI2cBus, system_i2c_bus, top_i2c_bus};
+use tildagon::i2c::{SharedI2cBus, system_i2c_bus};
 use trouble_host::advertise::AdStructure;
 use trouble_host::central::Central;
 use trouble_host::prelude::*;
@@ -352,9 +355,11 @@ async fn display_task(
             fps: &fps_str,
         };
 
-        if let Err(e) = render_with_stripes(&mut display, stripe_buffer, BG, |target, stripe_rect| {
-            draw_ui(target, current, &ui_strings, stripe_rect)
-        }) {
+        if let Err(e) =
+            render_with_stripes(&mut display, stripe_buffer, BG, |target, stripe_rect| {
+                draw_ui(target, current, &ui_strings, stripe_rect)
+            })
+        {
             println!("Display render error: {:?}", e);
         }
 
@@ -381,7 +386,9 @@ fn draw_ui<D>(
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    draw_stripe!(target, stripe_rect,
+    draw_stripe!(
+        target,
+        stripe_rect,
         Text::with_alignment(
             "WiFi BLE LCD",
             Point::new(120, 34),
@@ -415,7 +422,6 @@ where
         Text::new("WiFi", Point::new(26, 126), TEXT_STYLE),
         Text::new("BLE", Point::new(26, 146), TEXT_STYLE),
         Text::new(ui_strings.fps, Point::new(160, 210), TEXT_STYLE),
-
         Rectangle::new(WIFI_BAR_TOP_LEFT, Size::new(current.wifi_bar_width, 10))
             .into_styled(PrimitiveStyle::with_fill(WIFI)),
         Rectangle::new(BLE_BAR_TOP_LEFT, Size::new(current.ble_bar_width, 10))
@@ -474,9 +480,11 @@ async fn main(spawner: Spawner) {
         SharedI2cBus<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
     > = StaticCell::new();
     let shared_i2c = SHARED_I2C.init(AsyncMutex::new(tildagon.i2c.into_async()));
-    let mut button_int = tildagon.button_int;
+
+    // Start the background button service
+    let button_manager = TildagonHardware::init_button_manager(&spawner, shared_i2c);
+
     let mut battery = Battery::new(system_i2c_bus(shared_i2c));
-    let mut buttons = TypedButtons::new(system_i2c_bus(shared_i2c), top_i2c_bus(shared_i2c));
 
     if let Some(display) = display {
         spawner
@@ -542,20 +550,23 @@ async fn main(spawner: Spawner) {
         .expect("Failed to spawn ble_scan_task");
 
     println!("[BUTTON] Waiting for button events...");
+    let mut sub = button_manager.subscribe();
+
     loop {
-        match buttons.wait_for_event(&mut button_int).await {
-            Ok(Some(ButtonEvent::Pressed(Button::F))) => {
+        match sub.next_message_pure().await {
+            ButtonEvent::Pressed(Button::A) => {
+                println!("[BUTTON] Button A pressed");
+            }
+            ButtonEvent::Released(Button::A) => {
+                println!("[BUTTON] Button A released");
+            }
+            ButtonEvent::Pressed(Button::F) => {
                 println!("[BUTTON] Hold F for 2s to power off");
                 match embassy_time::with_timeout(Duration::from_secs(2), async {
                     loop {
-                        match buttons.wait_for_event(&mut button_int).await {
-                            Ok(Some(ButtonEvent::Released(Button::F))) => break,
-                            Ok(Some(event)) => println!("[BUTTON] Event: {:?}", event),
-                            Ok(None) => {}
-                            Err(e) => {
-                                println!("[BUTTON] Error reading buttons: {:?}", e);
-                                break;
-                            }
+                        match sub.next_message_pure().await {
+                            ButtonEvent::Released(Button::F) => break,
+                            event => println!("[BUTTON] Event: {:?}", event),
                         }
                     }
                 })
@@ -580,9 +591,7 @@ async fn main(spawner: Spawner) {
                     }
                 }
             }
-            Ok(Some(event)) => println!("[BUTTON] Event: {:?}", event),
-            Ok(None) => {}
-            Err(e) => println!("[BUTTON] Error reading buttons: {:?}", e),
+            event => println!("[BUTTON] Event: {:?}", event),
         }
     }
 }

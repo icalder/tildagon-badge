@@ -1,14 +1,10 @@
-use esp_hal::gpio::Input;
-use esp_hal::i2c::master::I2c;
-use esp_hal::Blocking;
 use embassy_time::{Duration, Timer};
-use embedded_hal_async::i2c::I2c as _;
+use embassy_sync::pubsub::{PubSubChannel, Subscriber};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use heapless::Vec;
 use crate::Error;
 
 /// A button press on the Tildagon badge hex-pad.
-///
-/// # Compatibility Baseline (Phase 0)
-/// All six variants are part of the stable surface consumed by `embassy_blinky`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
     A, B, C, D, E, F
@@ -25,133 +21,17 @@ pub enum ButtonEvent {
     Released(Button),
 }
 
-/// Interrupt-driven button reader.
+/// A button reader that uses the mux-aware I2C bus and typed pins.
 ///
-/// # Compatibility Baseline (Phase 0)
-/// [`Buttons::new`] and [`Buttons::wait_for_press`] are the stable entry points
-/// consumed by `embassy_blinky`. They must keep the same signatures through
-/// Phases 1-3. An interrupt-driven async event API will be added as an
-/// *additive* API in Phase 3, not as a replacement.
-pub struct Buttons {
-    last_state_59: u8,
-    last_state_5a: u8,
-}
-
-impl Buttons {
-    /// Create a new `Buttons` with no remembered state.
-    ///
-    /// # Compatibility Baseline (Phase 0)
-    pub fn new() -> Self {
-        Self {
-            last_state_59: 0xFF,
-            last_state_5a: 0xFF,
-        }
-    }
-
-    /// Block until a button is pressed and return which one.
-    ///
-    /// Waits for a falling edge on the shared INT line, debounces it, then
-    /// reads the AW9523B expanders (0x59, 0x5a) via the mux to determine
-    /// which button changed. Also clears FUSB302B and BQ25895 interrupt
-    /// sources so the INT line can de-assert.
-    ///
-    /// # Compatibility Baseline (Phase 0)
-    /// This signature must remain stable through Phases 1-3.
-    pub async fn wait_for_press(
-        &mut self,
-        i2c: &mut I2c<'_, Blocking>,
-        button_int: &mut Input<'_>,
-    ) -> Result<Option<Button>, Error> {
-        loop {
-            button_int.wait_for_falling_edge().await;
-
-            if button_int.is_high() {
-                continue;
-            }
-
-            Timer::after(Duration::from_millis(20)).await;
-            if button_int.is_high() {
-                continue;
-            }
-
-            let mut port0_58 = [0u8; 1];
-            let mut port0_59 = [self.last_state_59; 1];
-            let mut port1_59 = [0u8; 1];
-            let mut port0_5a = [self.last_state_5a; 1];
-            let mut port1_5a = [0u8; 1];
-            let mut dummy = [0u8; 2];
-
-            // 1. Check chips on Port 7 (System)
-            i2c.write(0x77u8, &[1 << 7])?;
-            if button_int.is_low() {
-                i2c.write_read(0x58u8, &[0x00], &mut port0_58)?;
-                i2c.write_read(0x58u8, &[0x01], &mut port0_58)?;
-            }
-            if button_int.is_low() {
-                i2c.write_read(0x59u8, &[0x00], &mut port0_59)?;
-                i2c.write_read(0x59u8, &[0x01], &mut port1_59)?;
-            }
-            if button_int.is_low() {
-                i2c.write_read(0x5au8, &[0x00], &mut port0_5a)?;
-                i2c.write_read(0x5au8, &[0x01], &mut port1_5a)?;
-            }
-            if button_int.is_low() {
-                i2c.write_read(0x6Au8, &[0x0B], &mut dummy)?;
-                i2c.write_read(0x22u8, &[0x3E], &mut dummy)?;
-                i2c.write_read(0x22u8, &[0x42], &mut dummy[..1])?;
-            }
-
-            // 2. Check chips on Port 0 (USB Out)
-            if button_int.is_low() {
-                i2c.write(0x77u8, &[1 << 0])?;
-                i2c.write_read(0x22u8, &[0x3E], &mut dummy)?;
-                i2c.write_read(0x22u8, &[0x42], &mut dummy[..1])?;
-                i2c.write(0x77u8, &[1 << 7])?;
-            }
-
-            let changed_59 = port0_59[0] ^ self.last_state_59;
-            let pressed_59 = !port0_59[0] & changed_59;
-            
-            let changed_5a = port0_5a[0] ^ self.last_state_5a;
-            let pressed_5a = !port0_5a[0] & changed_5a;
-
-            self.last_state_59 = port0_59[0];
-            self.last_state_5a = port0_5a[0];
-
-            if pressed_59 & (1 << 0) != 0 {
-                return Ok(Some(Button::C));
-            }
-            if pressed_59 & (1 << 1) != 0 {
-                return Ok(Some(Button::D));
-            }
-            if pressed_59 & (1 << 2) != 0 {
-                return Ok(Some(Button::E));
-            }
-            if pressed_59 & (1 << 3) != 0 {
-                return Ok(Some(Button::F));
-            }
-            if pressed_5a & (1 << 6) != 0 {
-                return Ok(Some(Button::A));
-            }
-            if pressed_5a & (1 << 7) != 0 {
-                return Ok(Some(Button::B));
-            }
-
-            if button_int.is_low() {
-                Timer::after(Duration::from_millis(10)).await;
-            }
-        }
-    }
-}
-
-/// A button reader that uses the new mux-aware I2C bus and typed pins.
+/// This implementation is designed for reliable polling-based detection,
+/// which is much more stable during high radio activity than the legacy
+/// interrupt-driven approach.
 ///
 /// # Attribution
 /// Architecture and event-handling pattern ported from
 /// [tildagon-rs by Dan Nixon](https://github.com/DanNixon/tildagon-rs).
 pub struct TypedButtons<BUS: 'static> {
     system_i2c: crate::i2c::SystemI2cBus<BUS>,
-    top_i2c: crate::i2c::TopBoardI2cBus<BUS>,
     last_state_59: u8,
     last_state_5a: u8,
 }
@@ -162,102 +42,108 @@ where
     crate::Error: From<BUS::Error>,
 {
     /// Create a new `TypedButtons` handle.
-    ///
-    /// Takes ownership of the system and top-board mux-aware I2C handles so it
-    /// can preserve the badge's cross-bus interrupt silencing behaviour.
     pub fn new(
         system_i2c: crate::i2c::SystemI2cBus<BUS>,
-        top_i2c: crate::i2c::TopBoardI2cBus<BUS>,
     ) -> Self {
         Self {
             system_i2c,
-            top_i2c,
             last_state_59: 0xFF,
             last_state_5a: 0xFF,
         }
     }
 
-    /// Block until a button event (press or release) occurs.
+    /// Surgically poll for button state changes.
     ///
-    /// # Attribution
-    /// Logic ported from [tildagon-rs by Dan Nixon](https://github.com/DanNixon/tildagon-rs),
-    /// adapted to include the silence-interrupts logic required for the 2024 badge.
-    pub async fn wait_for_event(
-        &mut self,
-        button_int: &mut Input<'_>,
-    ) -> Result<Option<ButtonEvent>, Error> {
-        loop {
-            button_int.wait_for_falling_edge().await;
+    /// This method ignores the shared interrupt line and only reads the
+    /// registers for the two chips containing buttons. This is faster and
+    /// much more reliable than interrupt-driven reads during high radio activity.
+    pub async fn poll(&mut self) -> Result<Vec<ButtonEvent, 12>, Error> {
+        let mut port0_59 = [self.last_state_59; 1];
+        let mut port0_5a = [self.last_state_5a; 1];
 
-            if button_int.is_high() {
-                continue;
+        // Surgical 2-read check
+        {
+            let mut bus: embassy_sync::mutex::MutexGuard<'_, crate::i2c::SharingRawMutex, BUS> = 
+                self.system_i2c.lock().await?;
+            bus.write_read(0x59u8, &[0x00], &mut port0_59).await?;
+            bus.write_read(0x5au8, &[0x00], &mut port0_5a).await?;
+        }
+
+        let changed_59 = port0_59[0] ^ self.last_state_59;
+        let changed_5a = port0_5a[0] ^ self.last_state_5a;
+
+        if changed_59 == 0 && changed_5a == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut events = Vec::new();
+
+        macro_rules! check_button {
+            ($changed:expr, $current:expr, $bit:expr, $btn:expr) => {
+                if $changed & (1 << $bit) != 0 {
+                    let event = if $current & (1 << $bit) == 0 {
+                        ButtonEvent::Pressed($btn)
+                    } else {
+                        ButtonEvent::Released($btn)
+                    };
+                    let _ = events.push(event);
+                }
+            };
+        }
+
+        check_button!(changed_59, port0_59[0], 0, Button::C);
+        check_button!(changed_59, port0_59[0], 1, Button::D);
+        check_button!(changed_59, port0_59[0], 2, Button::E);
+        check_button!(changed_59, port0_59[0], 3, Button::F);
+        check_button!(changed_5a, port0_5a[0], 6, Button::A);
+        check_button!(changed_5a, port0_5a[0], 7, Button::B);
+
+        self.last_state_59 = port0_59[0];
+        self.last_state_5a = port0_5a[0];
+
+        Ok(events)
+    }
+}
+
+/// Global button event channel.
+static BUTTON_CHANNEL: PubSubChannel<CriticalSectionRawMutex, ButtonEvent, 16, 4, 1> = 
+    PubSubChannel::new();
+
+/// Service that polls buttons in the background and broadcasts events.
+pub struct ButtonManager;
+
+impl ButtonManager {
+    /// Subscribe to the button event stream.
+    pub fn subscribe(&self) -> Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 16, 4, 1> {
+        BUTTON_CHANNEL.subscriber().unwrap()
+    }
+}
+
+/// Background task that performs surgical polling and broadcasts events.
+#[embassy_executor::task]
+pub async fn button_manager_task(mut buttons: TypedButtons<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>) {
+    let publisher = BUTTON_CHANNEL.publisher().unwrap();
+    
+    // Give the system 100ms to settle (WiFi/BLE init, etc.) before starting the poll loop.
+    // This prevents a single I2C timeout during the "startup storm".
+    Timer::after(Duration::from_millis(100)).await;
+
+    // Warm-up poll to synchronize last_state without broadcasting events.
+    let _ = buttons.poll().await;
+
+    let mut ticker = embassy_time::Ticker::every(Duration::from_millis(20));
+    loop {
+        ticker.next().await;
+        match buttons.poll().await {
+            Ok(events) => {
+                for event in events {
+                    publisher.publish(event).await;
+                }
             }
-
-            Timer::after(Duration::from_millis(20)).await;
-            if button_int.is_high() {
-                continue;
-            }
-
-            let mut port0_58 = [0u8; 1];
-            let mut port0_59 = [self.last_state_59; 1];
-            let mut port1_59 = [0u8; 1];
-            let mut port0_5a = [self.last_state_5a; 1];
-            let mut port1_5a = [0u8; 1];
-            let mut dummy = [0u8; 2];
-
-            // 1. Check chips on Port 7 (System)
-            // Note: SystemI2cBus already handles switching to mux port 7.
-            if button_int.is_low() {
-                self.system_i2c.write_read(0x58u8, &[0x00], &mut port0_58).await?;
-                self.system_i2c.write_read(0x58u8, &[0x01], &mut port0_58).await?;
-            }
-            if button_int.is_low() {
-                self.system_i2c.write_read(0x59u8, &[0x00], &mut port0_59).await?;
-                self.system_i2c.write_read(0x59u8, &[0x01], &mut port1_59).await?;
-            }
-            if button_int.is_low() {
-                self.system_i2c.write_read(0x5au8, &[0x00], &mut port0_5a).await?;
-                self.system_i2c.write_read(0x5au8, &[0x01], &mut port1_5a).await?;
-            }
-            if button_int.is_low() {
-                self.system_i2c.write_read(0x6Au8, &[0x0B], &mut dummy).await?;
-                self.system_i2c.write_read(0x22u8, &[0x3E], &mut dummy).await?;
-                self.system_i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]).await?;
-            }
-
-            // 2. Check chips on Port 0 (USB Out)
-            if button_int.is_low() {
-                self.top_i2c.write_read(0x22u8, &[0x3E], &mut dummy).await?;
-                self.top_i2c.write_read(0x22u8, &[0x42], &mut dummy[..1]).await?;
-            }
-
-            let changed_59 = port0_59[0] ^ self.last_state_59;
-            let pressed_59 = !port0_59[0] & changed_59;
-            let released_59 = port0_59[0] & changed_59;
-            
-            let changed_5a = port0_5a[0] ^ self.last_state_5a;
-            let pressed_5a = !port0_5a[0] & changed_5a;
-            let released_5a = port0_5a[0] & changed_5a;
-
-            self.last_state_59 = port0_59[0];
-            self.last_state_5a = port0_5a[0];
-
-            if pressed_59 & (1 << 0) != 0 { return Ok(Some(ButtonEvent::Pressed(Button::C))); }
-            if pressed_59 & (1 << 1) != 0 { return Ok(Some(ButtonEvent::Pressed(Button::D))); }
-            if pressed_59 & (1 << 2) != 0 { return Ok(Some(ButtonEvent::Pressed(Button::E))); }
-            if pressed_59 & (1 << 3) != 0 { return Ok(Some(ButtonEvent::Pressed(Button::F))); }
-            if pressed_5a & (1 << 6) != 0 { return Ok(Some(ButtonEvent::Pressed(Button::A))); }
-            if pressed_5a & (1 << 7) != 0 { return Ok(Some(ButtonEvent::Pressed(Button::B))); }
-
-            if released_59 & (1 << 0) != 0 { return Ok(Some(ButtonEvent::Released(Button::C))); }
-            if released_59 & (1 << 1) != 0 { return Ok(Some(ButtonEvent::Released(Button::D))); }
-            if released_59 & (1 << 2) != 0 { return Ok(Some(ButtonEvent::Released(Button::E))); }
-            if released_59 & (1 << 3) != 0 { return Ok(Some(ButtonEvent::Released(Button::F))); }
-            if released_5a & (1 << 6) != 0 { return Ok(Some(ButtonEvent::Released(Button::A))); }
-            if released_5a & (1 << 7) != 0 { return Ok(Some(ButtonEvent::Released(Button::B))); }
-
-            if button_int.is_low() {
-                Timer::after(Duration::from_millis(10)).await;
+            Err(e) => {
+                // If we get an I2C error (like a timeout during a WiFi scan),
+                // we just log it and try again on the next tick.
+                esp_println::println!("[BUTTON] Poll error: {:?}", e);
             }
         }
     }

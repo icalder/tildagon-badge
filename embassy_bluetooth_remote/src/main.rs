@@ -18,9 +18,9 @@ use esp_radio::ble::controller::BleConnector;
 use smart_leds::{RGB8, colors::*};
 use static_cell::StaticCell;
 use tildagon::battery::Battery;
-use tildagon::buttons::{Button, ButtonEvent, TypedButtons};
+use tildagon::buttons::{Button, ButtonEvent};
 use tildagon::hardware::TildagonHardware;
-use tildagon::i2c::{system_i2c_bus, top_i2c_bus};
+use tildagon::i2c::system_i2c_bus;
 use tildagon::leds::{NUM_LEDS, TypedLeds};
 use tildagon::pins::Pins;
 use trouble_host::prelude::*;
@@ -31,7 +31,7 @@ type BadgeLeds = TypedLeds<BadgeI2c>;
 type BleStack = Stack<'static, BleExternalController, DefaultPacketPool>;
 type BleRunner = Runner<'static, BleExternalController, DefaultPacketPool>;
 type BlePeripheral = Peripheral<'static, BleExternalController, DefaultPacketPool>;
-type ButtonSubscriber = Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 8, 1, 1>;
+type ButtonSubscriber = embassy_sync_08::pubsub::Subscriber<'static, embassy_sync_08::blocking_mutex::raw::CriticalSectionRawMutex, ButtonEvent, 16, 4, 1>;
 type LedSubscriber = Subscriber<'static, CriticalSectionRawMutex, LedCommand, 8, 1, 2>;
 type LedPublisher = Publisher<'static, CriticalSectionRawMutex, LedCommand, 8, 1, 2>;
 
@@ -523,13 +523,15 @@ async fn main(spawner: Spawner) {
 
     static SHARED_I2C: StaticCell<tildagon::i2c::SharedI2cBus<BadgeI2c>> = StaticCell::new();
     let shared_i2c = SHARED_I2C.init(AsyncMutex::new(tildagon.i2c.into_async()));
-    let mut button_int = tildagon.button_int;
-    let mut buttons = TypedButtons::new(system_i2c_bus(shared_i2c), top_i2c_bus(shared_i2c));
+    
+    // Start the background button service
+    let button_manager = TildagonHardware::init_button_manager(&spawner, shared_i2c);
+    
     let pins = Pins::new();
 
     let leds = TypedLeds::new(
         tildagon.rmt,
-        tildagon.led_pin,
+        tildagon.led_data_pin,
         pins.led,
         system_i2c_bus(shared_i2c),
     )
@@ -570,10 +572,6 @@ async fn main(spawner: Spawner) {
         .expect("BLE server init failed"),
     );
 
-    static BUTTON_CHANNEL: StaticCell<PubSubChannel<CriticalSectionRawMutex, ButtonEvent, 8, 1, 1>> =
-        StaticCell::new();
-    let button_channel = BUTTON_CHANNEL.init(PubSubChannel::new());
-
     static LED_CHANNEL: StaticCell<PubSubChannel<CriticalSectionRawMutex, LedCommand, 8, 1, 2>> =
         StaticCell::new();
     let led_channel = LED_CHANNEL.init(PubSubChannel::new());
@@ -586,7 +584,7 @@ async fn main(spawner: Spawner) {
         .expect("Failed to spawn led_task");
     spawner
         .spawn(button_handler_task(
-            button_channel.subscriber().unwrap(),
+            button_manager.subscribe(),
             led_channel.publisher().unwrap(),
             Battery::new(system_i2c_bus(shared_i2c)),
         ))
@@ -601,16 +599,8 @@ async fn main(spawner: Spawner) {
         ))
         .expect("Failed to spawn ble_peripheral_task");
 
-    let publisher = button_channel.publisher().unwrap();
-
-    println!("[BUTTON] Waiting for button events...");
+    println!("[BUTTON] All tasks started, background polling active.");
     loop {
-        match buttons.wait_for_event(&mut button_int).await {
-            Ok(Some(event)) => {
-                publisher.publish_immediate(event);
-            }
-            Ok(None) => {}
-            Err(e) => println!("[BUTTON] Error reading buttons: {:?}", e),
-        }
+        Timer::after(Duration::from_secs(60)).await;
     }
 }
