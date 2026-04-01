@@ -13,7 +13,7 @@ use bt_hci::controller::ExternalController;
 use bt_hci::param::LeAdvReportsIter;
 use core::cell::RefCell;
 use core::str;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use embassy_executor::Spawner;
 use embassy_net::Runner as NetRunner;
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
@@ -39,7 +39,7 @@ use tildagon::display::{StripeBuffer, TildagonDisplay, render_with_stripes};
 use tildagon::draw_stripe;
 use tildagon::hardware::TildagonHardware;
 use tildagon::i2c::{SharedI2cBus, system_i2c_bus};
-use tildagon::leds::{TypedLeds, NUM_LEDS};
+use tildagon::leds::{NUM_LEDS, TypedLeds};
 use tildagon::pins::Pins;
 use trouble_host::advertise::AdStructure;
 use trouble_host::central::Central;
@@ -48,6 +48,8 @@ use trouble_host::prelude::*;
 static WIFI_SCAN_COUNT: AtomicU32 = AtomicU32::new(0);
 static WIFI_NETWORK_COUNT: AtomicU32 = AtomicU32::new(0);
 static BLE_SEEN_COUNT: AtomicU32 = AtomicU32::new(0);
+static BUTTON_A_PRESSED: AtomicBool = AtomicBool::new(false);
+static BUTTON_F_PRESSED: AtomicBool = AtomicBool::new(false);
 
 /// LRU-evicting set of BLE device addresses.
 ///
@@ -131,13 +133,13 @@ fn frame_state(frame: u32) -> FrameState {
 }
 
 #[embassy_executor::task]
-async fn status_led_task(
-    mut leds: TypedLeds<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
-) {
+async fn status_led_task(mut leds: TypedLeds<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>) {
     println!("Status LED task started");
     let mut last_wifi_count = u32::MAX;
     let mut last_ble_count = u32::MAX;
-    
+    let mut last_button_a = false;
+    let mut last_button_f = false;
+
     let half_green = smart_leds::RGB8 {
         r: GREEN.r / 2,
         g: GREEN.g / 2,
@@ -152,10 +154,16 @@ async fn status_led_task(
     loop {
         let wifi_count = WIFI_NETWORK_COUNT.load(Ordering::Relaxed);
         let ble_count = BLE_SEEN_COUNT.load(Ordering::Relaxed);
+        let button_a = BUTTON_A_PRESSED.load(Ordering::Relaxed);
+        let button_f = BUTTON_F_PRESSED.load(Ordering::Relaxed);
 
-        if wifi_count != last_wifi_count || ble_count != last_ble_count {
+        if wifi_count != last_wifi_count
+            || ble_count != last_ble_count
+            || button_a != last_button_a
+            || button_f != last_button_f
+        {
             let mut data = [BLACK; NUM_LEDS];
-            
+
             // WiFi: LEDs 1-6 (inner ring), binary encoded, capped at 63
             let display_wifi = wifi_count.min(63);
             for i in 0..6 {
@@ -173,13 +181,25 @@ async fn status_led_task(
                 }
             }
 
+            // Button A: LED 13, bright red when pressed
+            if button_a {
+                data[13] = RED;
+            }
+
+            // Button F: LED 18, magenta when pressed
+            if button_f {
+                data[18] = MAGENTA;
+            }
+
             if let Err(e) = leds.write(data.iter().cloned()).await {
                 println!("LED write error: {:?}", e);
             }
             last_wifi_count = wifi_count;
             last_ble_count = ble_count;
+            last_button_a = button_a;
+            last_button_f = button_f;
         }
-        Timer::after(Duration::from_millis(500)).await;
+        Timer::after(Duration::from_millis(20)).await;
     }
 }
 
@@ -547,7 +567,9 @@ async fn main(spawner: Spawner) {
     .await
     .expect("Typed LED init failed");
 
-    spawner.spawn(status_led_task(leds)).expect("Failed to spawn status_led_task");
+    spawner
+        .spawn(status_led_task(leds))
+        .expect("Failed to spawn status_led_task");
 
     // Start the background button service
     let button_manager = TildagonHardware::init_button_manager(&spawner, shared_i2c);
@@ -623,17 +645,21 @@ async fn main(spawner: Spawner) {
     loop {
         match sub.next_message_pure().await {
             ButtonEvent::Pressed(Button::A) => {
-                println!("[BUTTON] Button A pressed");
+                BUTTON_A_PRESSED.store(true, Ordering::Relaxed);
             }
             ButtonEvent::Released(Button::A) => {
-                println!("[BUTTON] Button A released");
+                BUTTON_A_PRESSED.store(false, Ordering::Relaxed);
             }
             ButtonEvent::Pressed(Button::F) => {
                 println!("[BUTTON] Hold F for 2s to power off");
+                BUTTON_F_PRESSED.store(true, Ordering::Relaxed);
                 match embassy_time::with_timeout(Duration::from_secs(2), async {
                     loop {
                         match sub.next_message_pure().await {
-                            ButtonEvent::Released(Button::F) => break,
+                            ButtonEvent::Released(Button::F) => {
+                                BUTTON_F_PRESSED.store(false, Ordering::Relaxed);
+                                break;
+                            }
                             event => println!("[BUTTON] Event: {:?}", event),
                         }
                     }
