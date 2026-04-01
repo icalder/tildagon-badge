@@ -18,7 +18,18 @@ use embassy_executor::Spawner;
 use embassy_net::Runner as NetRunner;
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 use embassy_sync::mutex::Mutex as AsyncMutex;
+use embassy_sync::pubsub::{PubSubChannel, Subscriber};
+use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Instant, Timer};
+
+#[derive(Clone, Copy, Debug)]
+enum StatusUpdate {
+    WifiCount(u32),
+    BleCount(u32),
+}
+
+type ButtonSubscriber = Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 16, 4, 1>;
+type StatusSubscriber = Subscriber<'static, CriticalSectionRawMutex, StatusUpdate, 4, 2, 1>;
 use embedded_graphics::mono_font::{MonoTextStyle, ascii::FONT_8X13};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
@@ -50,6 +61,9 @@ static WIFI_NETWORK_COUNT: AtomicU32 = AtomicU32::new(0);
 static BLE_SEEN_COUNT: AtomicU32 = AtomicU32::new(0);
 static BUTTON_A_PRESSED: AtomicBool = AtomicBool::new(false);
 static BUTTON_F_PRESSED: AtomicBool = AtomicBool::new(false);
+
+static STATUS_CHANNEL: PubSubChannel<CriticalSectionRawMutex, StatusUpdate, 4, 2, 1> = 
+    PubSubChannel::new();
 
 /// LRU-evicting set of BLE device addresses.
 ///
@@ -133,7 +147,11 @@ fn frame_state(frame: u32) -> FrameState {
 }
 
 #[embassy_executor::task]
-async fn status_led_task(mut leds: TypedLeds<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>) {
+async fn status_led_task(
+    mut leds: TypedLeds<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
+    mut button_sub: ButtonSubscriber,
+    mut status_sub: StatusSubscriber,
+) {
     println!("Status LED task started");
     let mut last_wifi_count = u32::MAX;
     let mut last_ble_count = u32::MAX;
@@ -199,7 +217,25 @@ async fn status_led_task(mut leds: TypedLeds<esp_hal::i2c::master::I2c<'static, 
             last_button_a = button_a;
             last_button_f = button_f;
         }
-        Timer::after(Duration::from_millis(20)).await;
+
+        // Wait for EITHER a button event OR a status count update
+        match select(button_sub.next_message_pure(), status_sub.next_message_pure()).await {
+            Either::First(event) => {
+                match event {
+                    ButtonEvent::Pressed(Button::A) => BUTTON_A_PRESSED.store(true, Ordering::Relaxed),
+                    ButtonEvent::Released(Button::A) => BUTTON_A_PRESSED.store(false, Ordering::Relaxed),
+                    ButtonEvent::Pressed(Button::F) => BUTTON_F_PRESSED.store(true, Ordering::Relaxed),
+                    ButtonEvent::Released(Button::F) => BUTTON_F_PRESSED.store(false, Ordering::Relaxed),
+                    _ => {}
+                }
+            }
+            Either::Second(update) => {
+                match update {
+                    StatusUpdate::WifiCount(count) => WIFI_NETWORK_COUNT.store(count, Ordering::Relaxed),
+                    StatusUpdate::BleCount(count) => BLE_SEEN_COUNT.store(count, Ordering::Relaxed),
+                }
+            }
+        }
     }
 }
 
@@ -225,7 +261,9 @@ async fn wifi_scan_task(mut controller: WifiController<'static>) {
         match controller.scan_with_config_async(config).await {
             Ok(networks) => {
                 WIFI_SCAN_COUNT.fetch_add(1, Ordering::Relaxed);
-                WIFI_NETWORK_COUNT.store(networks.len() as u32, Ordering::Relaxed);
+                let count = networks.len() as u32;
+                WIFI_NETWORK_COUNT.store(count, Ordering::Relaxed);
+                let _ = STATUS_CHANNEL.publisher().unwrap().publish(StatusUpdate::WifiCount(count)).await;
                 println!("Found {} networks:", networks.len());
                 for network in networks {
                     println!(
@@ -278,7 +316,8 @@ impl EventHandler for ScannerHandler {
                 addr.copy_from_slice(report.addr.raw());
                 let was_new = BLE_SEEN_DEVICES.lock(|devices| devices.borrow_mut().insert(addr));
                 if was_new {
-                    BLE_SEEN_COUNT.fetch_add(1, Ordering::Relaxed);
+                    let count = BLE_SEEN_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                    let _ = STATUS_CHANNEL.publisher().unwrap().publish_immediate(StatusUpdate::BleCount(count));
                     if let Some(name) = advertised_name(report.data) {
                         println!("BLE: Discovered {name}, RSSI: {}", report.rssi);
                     } else {
@@ -567,12 +606,16 @@ async fn main(spawner: Spawner) {
     .await
     .expect("Typed LED init failed");
 
-    spawner
-        .spawn(status_led_task(leds))
-        .expect("Failed to spawn status_led_task");
-
     // Start the background button service
     let button_manager = TildagonHardware::init_button_manager(&spawner, shared_i2c);
+
+    spawner
+        .spawn(status_led_task(
+            leds,
+            button_manager.subscribe(),
+            STATUS_CHANNEL.subscriber().unwrap(),
+        ))
+        .expect("Failed to spawn status_led_task");
 
     let mut battery = Battery::new(system_i2c_bus(shared_i2c));
 

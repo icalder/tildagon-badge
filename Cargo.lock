@@ -529,6 +529,7 @@ version = "0.0.0"
 dependencies = [
  "bt-hci",
  "embassy-executor",
+ "embassy-futures",
  "embassy-net",
  "embassy-sync 0.8.0",
  "embassy-time",
