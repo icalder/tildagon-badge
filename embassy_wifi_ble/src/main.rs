@@ -31,6 +31,7 @@ use esp_radio::ble::controller::BleConnector;
 use esp_radio::wifi::{
     ClientConfig, Config as WifiConfig, ScanConfig as WifiScanConfig, WifiController, WifiDevice,
 };
+use smart_leds::colors::*;
 use static_cell::StaticCell;
 use tildagon::battery::{Battery, BatteryState};
 use tildagon::buttons::{Button, ButtonEvent};
@@ -38,6 +39,8 @@ use tildagon::display::{StripeBuffer, TildagonDisplay, render_with_stripes};
 use tildagon::draw_stripe;
 use tildagon::hardware::TildagonHardware;
 use tildagon::i2c::{SharedI2cBus, system_i2c_bus};
+use tildagon::leds::{TypedLeds, NUM_LEDS};
+use tildagon::pins::Pins;
 use trouble_host::advertise::AdStructure;
 use trouble_host::central::Central;
 use trouble_host::prelude::*;
@@ -124,6 +127,59 @@ fn frame_state(frame: u32) -> FrameState {
             1 => Rgb565::new(0, 63, 0),
             _ => Rgb565::new(0, 0, 31),
         },
+    }
+}
+
+#[embassy_executor::task]
+async fn status_led_task(
+    mut leds: TypedLeds<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
+) {
+    println!("Status LED task started");
+    let mut last_wifi_count = u32::MAX;
+    let mut last_ble_count = u32::MAX;
+    
+    let half_green = smart_leds::RGB8 {
+        r: GREEN.r / 2,
+        g: GREEN.g / 2,
+        b: GREEN.b / 2,
+    };
+    let half_blue = smart_leds::RGB8 {
+        r: BLUE.r / 2,
+        g: BLUE.g / 2,
+        b: BLUE.b / 2,
+    };
+
+    loop {
+        let wifi_count = WIFI_NETWORK_COUNT.load(Ordering::Relaxed);
+        let ble_count = BLE_SEEN_COUNT.load(Ordering::Relaxed);
+
+        if wifi_count != last_wifi_count || ble_count != last_ble_count {
+            let mut data = [BLACK; NUM_LEDS];
+            
+            // WiFi: LEDs 1-6 (inner ring), binary encoded, capped at 63
+            let display_wifi = wifi_count.min(63);
+            for i in 0..6 {
+                if (display_wifi >> i) & 1 == 1 {
+                    data[i + 1] = half_green;
+                }
+            }
+
+            // BLE: LEDs 7-12 (outer ring), binary encoded, capped at 63
+            // LSB (bit 0) at LED 12, MSB (bit 5) at LED 7
+            let display_ble = ble_count.min(63);
+            for i in 0..6 {
+                if (display_ble >> i) & 1 == 1 {
+                    data[12 - i] = half_blue;
+                }
+            }
+
+            if let Err(e) = leds.write(data.iter().cloned()).await {
+                println!("LED write error: {:?}", e);
+            }
+            last_wifi_count = wifi_count;
+            last_ble_count = ble_count;
+        }
+        Timer::after(Duration::from_millis(500)).await;
     }
 }
 
@@ -480,6 +536,18 @@ async fn main(spawner: Spawner) {
         SharedI2cBus<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
     > = StaticCell::new();
     let shared_i2c = SHARED_I2C.init(AsyncMutex::new(tildagon.i2c.into_async()));
+
+    let pins = Pins::new();
+    let leds = TypedLeds::new(
+        tildagon.rmt,
+        tildagon.led_data_pin,
+        pins.led,
+        system_i2c_bus(shared_i2c),
+    )
+    .await
+    .expect("Typed LED init failed");
+
+    spawner.spawn(status_led_task(leds)).expect("Failed to spawn status_led_task");
 
     // Start the background button service
     let button_manager = TildagonHardware::init_button_manager(&spawner, shared_i2c);
