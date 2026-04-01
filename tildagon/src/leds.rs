@@ -1,74 +1,112 @@
+use esp_hal::{Blocking, gpio::Level, rmt::{Channel, PulseCode, Tx, TxChannelConfig, TxChannelCreator}};
 use esp_hal::rmt::Rmt;
 use esp_hal::time::Rate;
 use esp_hal::peripherals::{RMT, GPIO21};
-use esp_hal_smartled::{SmartLedsAdapterAsync, buffer_size_async};
-use smart_leds::{SmartLedsWriteAsync, colors};
+use esp_hal_smartled::LedAdapterError;
+use smart_leds::{RGB8, colors};
 use static_cell::StaticCell;
 use crate::Error;
 use crate::pins::LedPins;
 use crate::i2c::SystemI2cBus;
 
 pub const NUM_LEDS: usize = 19;
-const BUFFER_SIZE: usize = buffer_size_async(NUM_LEDS);
+const PULSES_PER_LED: usize = 24; 
+const RESET_PULSES: usize = 4;
+const TX_BUFFER_SIZE: usize = NUM_LEDS * PULSES_PER_LED + RESET_PULSES + 1;
 
-/// WS2812B LED ring driver using the ESP32-S3 RMT peripheral.
-///
-/// # Compatibility Baseline (Phase 0)
-/// [`Leds::new`], [`Leds::write`], and [`Leds::clear`] are the stable surface
-/// consumed by `embassy_blinky`. The constructor takes ownership of `RMT` and
-/// `GPIO21` directly from `TildagonHardware` and must keep that shape through
-/// Phases 1-3.
+// WS2812B timing at 80 MHz APB clock (1 tick = 12.5 ns)
+const T0H: u16 = 32; // 400 ns high
+const T0L: u16 = 68; // 850 ns low
+const T1H: u16 = 68; // 850 ns high
+const T1L: u16 = 32; // 400 ns low
+
+fn led_channel_config() -> TxChannelConfig {
+    TxChannelConfig::default()
+        .with_clk_divider(1)
+        .with_idle_output_level(Level::Low)
+        .with_carrier_modulation(false)
+        .with_idle_output(true)
+        .with_memsize(8)
+}
+
+fn encode_frame(
+    iterator: impl Iterator<Item = RGB8>,
+    buffer: &mut [PulseCode; TX_BUFFER_SIZE],
+) {
+    let mut idx = 0;
+    for color in iterator {
+        for byte in [color.g, color.r, color.b] {
+            for shift in (0..8).rev() {
+                let (high, low) = if (byte >> shift) & 1 == 1 {
+                    (T1H, T1L)
+                } else {
+                    (T0H, T0L)
+                };
+                buffer[idx] = PulseCode::new(Level::High, high, Level::Low, low);
+                idx += 1;
+                if idx >= NUM_LEDS * PULSES_PER_LED {
+                    for _ in 0..RESET_PULSES {
+                        buffer[idx] = PulseCode::new(Level::Low, 12000, Level::Low, 12000);
+                        idx += 1;
+                    }
+                    buffer[idx] = PulseCode::end_marker();
+                    return;
+                }
+            }
+        }
+    }
+    for _ in 0..RESET_PULSES {
+        buffer[idx] = PulseCode::new(Level::Low, 12000, Level::Low, 12000);
+        idx += 1;
+    }
+    buffer[idx] = PulseCode::end_marker();
+}
+
 pub struct Leds {
-    adapter: SmartLedsAdapterAsync<'static, BUFFER_SIZE>,
+    channel: Option<Channel<'static, Blocking, Tx>>,
+    buffer: &'static mut [PulseCode; TX_BUFFER_SIZE],
 }
 
 impl Leds {
-    /// Initialise the RMT-backed LED adapter.
-    ///
-    /// Takes ownership of `RMT<'static>` and `GPIO21<'static>` (obtained from
-    /// [`TildagonHardware`](crate::hardware::TildagonHardware)'s fields).
-    ///
-    /// # Compatibility Baseline (Phase 0)
     pub fn new(rmt_peripheral: RMT<'static>, led_pin: GPIO21<'static>) -> Self {
-        let rmt = Rmt::new(rmt_peripheral, Rate::from_mhz(80))
-            .unwrap()
-            .into_async();
-        let rmt_channel = rmt.channel0;
-
-        static RMT_BUFFER: StaticCell<[esp_hal::rmt::PulseCode; BUFFER_SIZE]> = StaticCell::new();
-        let rmt_buffer = RMT_BUFFER.init([esp_hal::rmt::PulseCode::default(); BUFFER_SIZE]);
-
-        let adapter = SmartLedsAdapterAsync::new(rmt_channel, led_pin, rmt_buffer);
-
-        Self { adapter }
+        let rmt = Rmt::new(rmt_peripheral, Rate::from_mhz(80)).unwrap();
+        let channel = rmt.channel0.configure_tx(led_pin, led_channel_config()).unwrap();
+        static RMT_BUFFER: StaticCell<[PulseCode; TX_BUFFER_SIZE]> = StaticCell::new();
+        let buffer = RMT_BUFFER.init([PulseCode::end_marker(); TX_BUFFER_SIZE]);
+        Self { channel: Some(channel), buffer }
     }
 
-    /// Write a sequence of RGB values to all LEDs.
-    ///
-    /// # Compatibility Baseline (Phase 0)
     pub async fn write<I>(&mut self, iterator: I) -> Result<(), Error>
     where
-        I: Iterator<Item = smart_leds::RGB8>,
+        I: Iterator<Item = RGB8>,
     {
-        self.adapter.write(iterator).await.map_err(Error::Leds)
+        encode_frame(iterator, self.buffer);
+        let len = self.buffer.iter().position(|p| p.is_end_marker()).unwrap_or(TX_BUFFER_SIZE - 1) + 1;
+        let channel = self.channel.take().unwrap();
+        match channel.transmit(&self.buffer[..len]) {
+            Ok(transaction) => {
+                match transaction.wait() {
+                    Ok(chan) => {
+                        self.channel = Some(chan);
+                        Ok(())
+                    }
+                    Err((e, chan)) => {
+                        self.channel = Some(chan);
+                        Err(Error::Leds(LedAdapterError::TransmissionError(e)))
+                    }
+                }
+            }
+            Err(e) => Err(Error::Leds(LedAdapterError::TransmissionError(e))),
+        }
     }
 
-    /// Turn all LEDs off.
-    ///
-    /// # Compatibility Baseline (Phase 0)
     pub async fn clear(&mut self) -> Result<(), Error> {
-        let black = [colors::BLACK; NUM_LEDS];
-        self.write(black.iter().cloned()).await
+        self.write([colors::BLACK; NUM_LEDS].iter().cloned()).await
     }
 }
 
-/// A more ergonomic LED driver that manages its own power pin.
-///
-/// # Attribution
-/// Architecture ported from
-/// [tildagon-rs by Dan Nixon](https://github.com/DanNixon/tildagon-rs).
 pub struct TypedLeds<BUS: 'static> {
-    adapter: SmartLedsAdapterAsync<'static, BUFFER_SIZE>,
+    leds: Leds,
     power_pin: crate::pins::OutputPin<SystemI2cBus<BUS>>,
 }
 
@@ -77,34 +115,20 @@ where
     BUS: embedded_hal_async::i2c::I2c,
     crate::Error: From<BUS::Error>,
 {
-    /// Create a new `TypedLeds` handle.
-    ///
-    /// Takes ownership of the RMT peripheral, the data pin, and the I2C power pin.
     pub async fn new(
         rmt_peripheral: RMT<'static>,
         led_data_pin: GPIO21<'static>,
         power_pin: LedPins,
         i2c_bus: SystemI2cBus<BUS>,
     ) -> Result<Self, Error> {
-        let rmt = Rmt::new(rmt_peripheral, Rate::from_mhz(80))
-            .unwrap()
-            .into_async();
-        let rmt_channel = rmt.channel0;
-
-        static RMT_BUFFER: StaticCell<[esp_hal::rmt::PulseCode; BUFFER_SIZE]> = StaticCell::new();
-        let rmt_buffer = RMT_BUFFER.init([esp_hal::rmt::PulseCode::default(); BUFFER_SIZE]);
-
-        let adapter = SmartLedsAdapterAsync::new(rmt_channel, led_data_pin, rmt_buffer);
+        let leds = Leds::new(rmt_peripheral, led_data_pin);
         let power_pin = power_pin.power_enable.into_output(i2c_bus).await?;
-
-        let mut leds = Self { adapter, power_pin };
-        leds.set_power(true).await?;
-        leds.clear().await?;
-
-        Ok(leds)
+        let mut typed_leds = Self { leds, power_pin };
+        typed_leds.set_power(true).await?;
+        typed_leds.clear().await?;
+        Ok(typed_leds)
     }
 
-    /// Enable or disable power to the LED ring.
     pub async fn set_power(&mut self, enabled: bool) -> Result<(), Error> {
         use crate::pins::async_digital::OutputPin;
         if enabled {
@@ -114,17 +138,14 @@ where
         }
     }
 
-    /// Write a sequence of RGB values to all LEDs.
     pub async fn write<I>(&mut self, iterator: I) -> Result<(), Error>
     where
-        I: Iterator<Item = smart_leds::RGB8>,
+        I: Iterator<Item = RGB8>,
     {
-        self.adapter.write(iterator).await.map_err(Error::Leds)
+        self.leds.write(iterator).await
     }
 
-    /// Turn all LEDs off.
     pub async fn clear(&mut self) -> Result<(), Error> {
-        let black = [colors::BLACK; NUM_LEDS];
-        self.write(black.iter().cloned()).await
+        self.leds.clear().await
     }
 }

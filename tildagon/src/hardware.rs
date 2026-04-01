@@ -95,15 +95,21 @@ impl TildagonHardware {
 
         // Initialize GPIO Expanders (0x58, 0x59, 0x5a)
         for addr in [0x58u8, 0x59u8, 0x5au8] {
-            i2c.write(addr, &[0x7F, 0x00])?; // Soft Reset
-            Timer::after(Duration::from_millis(2)).await;
+            if addr != 0x5au8 {
+                i2c.write(addr, &[0x7F, 0x00])?; // Soft Reset
+                Timer::after(Duration::from_millis(2)).await;
+            }
             i2c.write(addr, &[0x06, 0xFF, 0xFF])?; // Mask all interrupts (Port 0 & 1)
-            i2c.write(addr, &[0x04, 0xFF, 0xFF])?; // Set all as Inputs (except bits cleared above)
+            
+            // Set direction: pins 2, 4, 5 as outputs (bit = 0) on 0x5a, rest as inputs (bit = 1)
+            let dir_p0 = if addr == 0x5au8 { 0xCB } else { 0xFF };
+            i2c.write(addr, &[0x04, dir_p0, 0xFF])?; 
+
             i2c.write(addr, &[0x11, 0x10])?;       // Push-pull output mode
         }
 
-        // Enable LED power
-        i2c.write(pins.led.power_enable.address(), &[0x02, pins.led.power_enable.bit()])?;
+        // Enable LED power (Pin 2 on 0x5a) while keeping Pin 4 and 5 LOW
+        i2c.write(0x5au8, &[0x02, pins.led.power_enable.bit()])?;
 
         Ok(Self {
             i2c,

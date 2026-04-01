@@ -4,14 +4,29 @@ This document records the hardware details of the Tildagon badge, focusing on wh
 
 ## LED Subsystem
 
-The Tildagon badge has 19 individually addressable RGB LEDs (Neopixels/WS2812).
+The Tildagon badge has 19 individually addressable RGB LEDs (Neopixels/WS2812) in a single serial chain.
 
-- **Data Pin:** The LEDs are controlled via `GPIO21` using `esp-hal-smartled`.
-- **Number of LEDs:** 19 in a chain.
-- **Power Control:** Controlled by pin 2 of the AW9523B at `0x5a` (see below). This pin must be driven HIGH to enable the 5V supply for the LED chain.
-- **Initialization:** It is recommended to perform an explicit `clear()` (sending all zeros) immediately after enabling power. This ensures the RMT peripheral and the WS2812B chain are synchronized, preventing random colors or index-shifting on the first real write.
-- **⚠️ Embassy / async:** Use `SmartLedsAdapterAsync` (not `SmartLedsAdapter`).
- The blocking adapter refills the ESP32-S3 RMT hardware RAM (~96 entries) via interrupts, which conflict with Embassy's scheduler and cause `TransmissionError` for chains longer than ~4 LEDs. The async adapter sends one LED at a time, fitting within the hardware RAM. Use `buffer_size_async(NUM_LEDS)` for the buffer size constant.
+### Hardware Mapping
+
+| Chain Index | Physical Location | Notes |
+|---|---|---|
+| **0** | **Base Board (Center)** | Single LED in the middle of the badge. |
+| **1 – 12** | **Top Board Ring** | 12 LEDs forming the hexagonal ring. |
+| **13 – 18** | **Hexpansion Slots** | 6 LEDs (one per slot) for expansion boards. |
+
+### Technical Details
+
+- **Data Pin:** `GPIO21`.
+- **Power Control:** Controlled by pin 2 of the AW9523B at `0x5a`. This pin must be driven HIGH to enable the 5V supply for the LED chain.
+- **Initialization:** Perform an explicit `clear()` (sending all zeros) immediately after enabling power. This ensures the RMT peripheral and the WS2812B chain are synchronized.
+
+### ⚠️ Driver Stability (ESP32-S3)
+
+For reliable operation of the full 19-LED chain on the ESP32-S3, the following implementation details are **mandatory**:
+
+1. **Use Blocking Mode:** The RMT driver MUST use blocking mode (`esp_hal::Blocking`). In async mode, the Embassy executor can yield during the RMT RAM refill interrupt to run high-priority tasks (like WiFi/BLE). If this takes >50µs, the RMT hardware wraps around its limited RAM (384 pulses), causing corrupted addressing and repeating colors.
+2. **Contiguous Buffer:** Send the entire 19-LED frame in a single RMT transaction. 
+3. **Explicit Reset Pulse:** Encode a ~300µs "Low" period (e.g., using multiple `PulseCode::new(Level::Low, ...)` entries) at the end of every RMT frame to ensure the WS2812B chips correctly latch the data.
 
 ## I2C Bus
 

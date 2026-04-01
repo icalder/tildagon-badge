@@ -107,7 +107,7 @@ async fn blinky(
     mut leds: TypedLeds<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
     mut sub: ButtonSubscriber,
 ) {
-    esp_println::println!("[BLINKY] Waiting for button C press to start animation...");
+    esp_println::println!("[BLINKY] Waiting for button A press...");
 
     loop {
         let event = sub.next_message_pure().await;
@@ -135,6 +135,22 @@ async fn blinky(
             Timer::after(Duration::from_millis(500)).await;
 
             esp_println::println!("[BLINKY] Animation complete, LEDs off");
+        }
+
+        if event == ButtonEvent::Pressed(Button::A) {
+            esp_println::println!("[BLINKY] Button A -> Top LED 1 RED (1s)");
+            let mut data = [BLACK; NUM_LEDS];
+            data[1] = smart_leds::RGB8 { r: 64, g: 0, b: 0 };
+            
+            if let Err(e) = leds.write(data.iter().cloned()).await {
+                esp_println::println!("LED write error: {:?}", e);
+            }
+            Timer::after(Duration::from_secs(1)).await;
+            let _ = leds.clear().await;
+        }
+
+        if event == ButtonEvent::Pressed(Button::F) {
+            let _ = leds.clear().await;
         }
     }
 }
