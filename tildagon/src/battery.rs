@@ -19,11 +19,11 @@ const POWER_ON_CONFIG_REGISTER: u8 = 0x03;
 const RESET_REGISTER: u8 = 0x14;
 const RESET_REGISTER_VALUE: u8 = 0x80;
 const CONFIG_START_REGISTER: u8 = 0x02;
-const CONFIG_BLOCK: [u8; 5] = [CONFIG_START_REGISTER, 0x60, 0x10, 0x18, 0x00];
 const CONTROL_REGISTER: u8 = 0x07;
 const CONTROL_REGISTER_VALUE: u8 = 0x8C;
 const MISC_OPERATION_REGISTER: u8 = 0x09;
 const BATFET_DISABLE_MASK: u8 = 0x20;
+const BATFET_IMMEDIATE_MASK: u8 = 0x08;
 const INPUT_HIZ_MASK: u8 = 0x80;
 const OTG_BOOST_MASK: u8 = 0x20;
 
@@ -189,7 +189,9 @@ where
     i2c.write(ADDRESS, &[RESET_REGISTER, RESET_REGISTER_VALUE])
         .map_err(Error::from)?;
     Timer::after(Duration::from_millis(10)).await;
-    i2c.write(ADDRESS, &CONFIG_BLOCK).map_err(Error::from)?;
+    // Config block: Reg 02=0x60, 03=0x00 (WD Disabled), 04=0x18, 05=0x00
+    i2c.write(ADDRESS, &[CONFIG_START_REGISTER, 0x60, 0x00, 0x18, 0x00])
+        .map_err(Error::from)?;
     i2c.write(ADDRESS, &[CONTROL_REGISTER, CONTROL_REGISTER_VALUE])
         .map_err(Error::from)?;
     i2c.write_read(ADDRESS, &[STATUS_START_REGISTER], &mut dummy)
@@ -243,8 +245,11 @@ where
     /// Request badge power-off by disconnecting the battery via the BATFET.
     pub async fn power_off(&mut self) -> Result<(), Error> {
         let misc = self.read_register(MISC_OPERATION_REGISTER).await?;
-        self.write_register(MISC_OPERATION_REGISTER, misc | BATFET_DISABLE_MASK)
-            .await
+        self.write_register(
+            MISC_OPERATION_REGISTER,
+            misc | BATFET_DISABLE_MASK | BATFET_IMMEDIATE_MASK,
+        )
+        .await
     }
 
     async fn read_register(&mut self, register: u8) -> Result<u8, Error> {

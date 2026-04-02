@@ -15,12 +15,13 @@ use core::cell::RefCell;
 use core::str;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use embassy_executor::Spawner;
+use embassy_futures::select::{Either, select};
 use embassy_net::Runner as NetRunner;
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 use embassy_sync::mutex::Mutex as AsyncMutex;
 use embassy_sync::pubsub::{PubSubChannel, Subscriber};
-use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Instant, Timer};
+use embedded_hal_async::i2c::I2c as _;
 
 #[derive(Clone, Copy, Debug)]
 enum StatusUpdate {
@@ -61,8 +62,9 @@ static WIFI_NETWORK_COUNT: AtomicU32 = AtomicU32::new(0);
 static BLE_SEEN_COUNT: AtomicU32 = AtomicU32::new(0);
 static BUTTON_A_PRESSED: AtomicBool = AtomicBool::new(false);
 static BUTTON_F_PRESSED: AtomicBool = AtomicBool::new(false);
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
-static STATUS_CHANNEL: PubSubChannel<CriticalSectionRawMutex, StatusUpdate, 4, 2, 1> = 
+static STATUS_CHANNEL: PubSubChannel<CriticalSectionRawMutex, StatusUpdate, 4, 2, 1> =
     PubSubChannel::new();
 
 /// LRU-evicting set of BLE device addresses.
@@ -170,6 +172,10 @@ async fn status_led_task(
     };
 
     loop {
+        if SHUTTING_DOWN.load(Ordering::Relaxed) {
+            let _ = leds.clear().await;
+            break;
+        }
         let wifi_count = WIFI_NETWORK_COUNT.load(Ordering::Relaxed);
         let ble_count = BLE_SEEN_COUNT.load(Ordering::Relaxed);
         let button_a = BUTTON_A_PRESSED.load(Ordering::Relaxed);
@@ -219,22 +225,29 @@ async fn status_led_task(
         }
 
         // Wait for EITHER a button event OR a status count update
-        match select(button_sub.next_message_pure(), status_sub.next_message_pure()).await {
-            Either::First(event) => {
-                match event {
-                    ButtonEvent::Pressed(Button::A) => BUTTON_A_PRESSED.store(true, Ordering::Relaxed),
-                    ButtonEvent::Released(Button::A) => BUTTON_A_PRESSED.store(false, Ordering::Relaxed),
-                    ButtonEvent::Pressed(Button::F) => BUTTON_F_PRESSED.store(true, Ordering::Relaxed),
-                    ButtonEvent::Released(Button::F) => BUTTON_F_PRESSED.store(false, Ordering::Relaxed),
-                    _ => {}
+        match select(
+            button_sub.next_message_pure(),
+            status_sub.next_message_pure(),
+        )
+        .await
+        {
+            Either::First(event) => match event {
+                ButtonEvent::Pressed(Button::A) => BUTTON_A_PRESSED.store(true, Ordering::Relaxed),
+                ButtonEvent::Released(Button::A) => {
+                    BUTTON_A_PRESSED.store(false, Ordering::Relaxed)
                 }
-            }
-            Either::Second(update) => {
-                match update {
-                    StatusUpdate::WifiCount(count) => WIFI_NETWORK_COUNT.store(count, Ordering::Relaxed),
-                    StatusUpdate::BleCount(count) => BLE_SEEN_COUNT.store(count, Ordering::Relaxed),
+                ButtonEvent::Pressed(Button::F) => BUTTON_F_PRESSED.store(true, Ordering::Relaxed),
+                ButtonEvent::Released(Button::F) => {
+                    BUTTON_F_PRESSED.store(false, Ordering::Relaxed)
                 }
-            }
+                _ => {}
+            },
+            Either::Second(update) => match update {
+                StatusUpdate::WifiCount(count) => {
+                    WIFI_NETWORK_COUNT.store(count, Ordering::Relaxed)
+                }
+                StatusUpdate::BleCount(count) => BLE_SEEN_COUNT.store(count, Ordering::Relaxed),
+            },
         }
     }
 }
@@ -248,6 +261,9 @@ async fn net_task(mut runner: NetRunner<'static, WifiDevice<'static>>) {
 async fn wifi_scan_task(mut controller: WifiController<'static>) {
     println!("WiFi scan task started");
     loop {
+        if SHUTTING_DOWN.load(Ordering::Relaxed) {
+            break;
+        }
         if matches!(controller.is_started(), Ok(false)) {
             let config = ClientConfig::default();
             controller
@@ -263,7 +279,11 @@ async fn wifi_scan_task(mut controller: WifiController<'static>) {
                 WIFI_SCAN_COUNT.fetch_add(1, Ordering::Relaxed);
                 let count = networks.len() as u32;
                 WIFI_NETWORK_COUNT.store(count, Ordering::Relaxed);
-                let _ = STATUS_CHANNEL.publisher().unwrap().publish(StatusUpdate::WifiCount(count)).await;
+                let _ = STATUS_CHANNEL
+                    .publisher()
+                    .unwrap()
+                    .publish(StatusUpdate::WifiCount(count))
+                    .await;
                 println!("Found {} networks:", networks.len());
                 for network in networks {
                     println!(
@@ -317,7 +337,10 @@ impl EventHandler for ScannerHandler {
                 let was_new = BLE_SEEN_DEVICES.lock(|devices| devices.borrow_mut().insert(addr));
                 if was_new {
                     let count = BLE_SEEN_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                    let _ = STATUS_CHANNEL.publisher().unwrap().publish_immediate(StatusUpdate::BleCount(count));
+                    let _ = STATUS_CHANNEL
+                        .publisher()
+                        .unwrap()
+                        .publish_immediate(StatusUpdate::BleCount(count));
                     if let Some(name) = advertised_name(report.data) {
                         println!("BLE: Discovered {name}, RSSI: {}", report.rssi);
                     } else {
@@ -355,6 +378,9 @@ async fn ble_scan_task(central: Central<'static, BleExternalController, DefaultP
     ble_scan_config.window = Duration::from_secs(1);
 
     loop {
+        if SHUTTING_DOWN.load(Ordering::Relaxed) {
+            break;
+        }
         let _scan_session = scanner
             .scan(&ble_scan_config)
             .await
@@ -402,6 +428,9 @@ async fn display_task(
     let mut last_fps_update = Instant::now();
 
     loop {
+        if SHUTTING_DOWN.load(Ordering::Relaxed) {
+            break;
+        }
         let frame_start = Instant::now();
 
         if Instant::now() >= next_battery_refresh {
@@ -713,7 +742,30 @@ async fn main(spawner: Spawner) {
                         println!("[BUTTON] Power-off cancelled");
                     }
                     Err(_) => {
-                        println!("[BUTTON] Long press detected, powering off");
+                        println!("[BUTTON] Long press detected, release to power off");
+                        BUTTON_F_PRESSED.store(false, Ordering::Relaxed);
+                        let _ = STATUS_CHANNEL.publisher().unwrap().publish_immediate(
+                            StatusUpdate::BleCount(BLE_SEEN_COUNT.load(Ordering::Relaxed)),
+                        );
+
+                        // Wait for button release before disconnecting battery.
+                        // Holding the button (QON) prevents entering ship mode.
+                        loop {
+                            if let ButtonEvent::Released(Button::F) = sub.next_message_pure().await
+                            {
+                                break;
+                            }
+                        }
+
+                        println!("[BUTTON] Released! Powering off...");
+                        SHUTTING_DOWN.store(true, Ordering::Relaxed);
+                        // Brief delay for tasks to exit and I2C to settle
+                        Timer::after(Duration::from_millis(100)).await;
+
+                        // Turn off VBUS switch (Expander 0x5a, Reg 0x02, Bit 4 = 0) and LED power (Bit 2 = 0)
+                        let mut bus = system_i2c_bus(shared_i2c);
+                        let _ = bus.write(0x5au8, &[0x02, 0x00]).await;
+
                         match battery.power_off().await {
                             Ok(()) => {
                                 println!("[BUTTON] BATFET disabled; waiting for power loss");

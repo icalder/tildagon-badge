@@ -9,6 +9,7 @@
 extern crate alloc;
 
 use core::fmt::Write as _;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -24,7 +25,7 @@ use tildagon::buttons::{Button, ButtonEvent};
 use tildagon::display::TildagonDisplay;
 use tildagon::hardware::TildagonHardware;
 use tildagon::i2c::{SharedI2cBus, system_i2c_bus};
-use tildagon::leds::{TypedLeds, NUM_LEDS};
+use tildagon::leds::{NUM_LEDS, TypedLeds};
 use tildagon::pins::Pins;
 
 use embedded_graphics::mono_font::MonoTextStyle;
@@ -35,6 +36,8 @@ use embedded_graphics::text::{Alignment, Text};
 use profont::PROFONT_24_POINT;
 
 esp_bootloader_esp_idf::esp_app_desc!();
+
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 #[embassy_executor::task]
 async fn run() {
@@ -83,12 +86,11 @@ async fn button_monitor(
                 esp_println::println!("[BUTTON_MONITOR] Long press detected, powering off");
                 match battery.power_off().await {
                     Ok(()) => {
+                        SHUTTING_DOWN.store(true, Ordering::Relaxed);
                         esp_println::println!(
                             "[BUTTON_MONITOR] BATFET disabled; waiting for power loss"
                         );
-                        loop {
-                            Timer::after(Duration::from_secs(1)).await;
-                        }
+                        break;
                     }
                     Err(e) => {
                         esp_println::println!(
@@ -141,7 +143,7 @@ async fn blinky(
             esp_println::println!("[BLINKY] Button A -> Top LED 1 RED (1s)");
             let mut data = [BLACK; NUM_LEDS];
             data[1] = smart_leds::RGB8 { r: 64, g: 0, b: 0 };
-            
+
             if let Err(e) = leds.write(data.iter().cloned()).await {
                 esp_println::println!("LED write error: {:?}", e);
             }
@@ -175,6 +177,10 @@ async fn display_task(
     let mut battery_refresh_ticks = 0u8;
 
     loop {
+        if SHUTTING_DOWN.load(Ordering::Relaxed) {
+            break;
+        }
+
         let mut redraw = false;
 
         if battery_refresh_ticks == 0 {
@@ -215,9 +221,13 @@ async fn display_task(
         if redraw {
             let overlay_text = overlay.map(|(text, pos, _)| (text, pos));
             let render_result = match battery_state {
-                Some(state) => {
-                    render_battery_info(&mut display, level_style, detail_style, state, overlay_text)
-                }
+                Some(state) => render_battery_info(
+                    &mut display,
+                    level_style,
+                    detail_style,
+                    state,
+                    overlay_text,
+                ),
                 None => render_battery_error(&mut display, detail_style, overlay_text),
             };
 
@@ -240,8 +250,13 @@ fn render_startup(
     detail_style: MonoTextStyle<'static, Rgb565>,
 ) -> Result<(), DisplayDrawError> {
     clear_display(display)?;
-    Text::with_alignment("Battery", Point::new(120, 96), detail_style, Alignment::Center)
-        .draw(display)?;
+    Text::with_alignment(
+        "Battery",
+        Point::new(120, 96),
+        detail_style,
+        Alignment::Center,
+    )
+    .draw(display)?;
     Text::with_alignment("--%", Point::new(120, 132), level_style, Alignment::Center)
         .draw(display)?;
     Ok(())
@@ -263,8 +278,13 @@ fn render_battery_info(
     let _ = write!(status_text, "{}", state.charge_status.as_str());
 
     clear_display(display)?;
-    Text::with_alignment("Battery", Point::new(120, 84), detail_style, Alignment::Center)
-        .draw(display)?;
+    Text::with_alignment(
+        "Battery",
+        Point::new(120, 84),
+        detail_style,
+        Alignment::Center,
+    )
+    .draw(display)?;
     Text::with_alignment(
         level_text.as_str(),
         Point::new(120, 128),
@@ -300,10 +320,20 @@ fn render_battery_error(
     overlay: Option<(&str, Point)>,
 ) -> Result<(), DisplayDrawError> {
     clear_display(display)?;
-    Text::with_alignment("Battery", Point::new(120, 108), detail_style, Alignment::Center)
-        .draw(display)?;
-    Text::with_alignment("read error", Point::new(120, 136), detail_style, Alignment::Center)
-        .draw(display)?;
+    Text::with_alignment(
+        "Battery",
+        Point::new(120, 108),
+        detail_style,
+        Alignment::Center,
+    )
+    .draw(display)?;
+    Text::with_alignment(
+        "read error",
+        Point::new(120, 136),
+        detail_style,
+        Alignment::Center,
+    )
+    .draw(display)?;
 
     if let Some((text, pos)) = overlay {
         Text::new(text, pos, detail_style).draw(display)?;
@@ -390,10 +420,10 @@ async fn main(spawner: Spawner) {
         SharedI2cBus<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
     > = StaticCell::new();
     let shared_i2c = SHARED_I2C.init(AsyncMutex::new(tildagon.i2c.into_async()));
-    
+
     // Start the background button service
     let button_manager = TildagonHardware::init_button_manager(&spawner, shared_i2c);
-    
+
     let pins = Pins::new();
 
     esp_println::println!("Boot: Tildagon hardware init done, typed shared I2C ready");
