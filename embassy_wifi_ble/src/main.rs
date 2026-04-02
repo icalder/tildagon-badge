@@ -16,7 +16,6 @@ use core::str;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
-use embassy_net::Runner as NetRunner;
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 use embassy_sync::mutex::Mutex as AsyncMutex;
 use embassy_sync::pubsub::{PubSubChannel, Subscriber};
@@ -40,9 +39,8 @@ use esp_backtrace as _;
 use esp_hal::rng::Rng;
 use esp_println::println;
 use esp_radio::ble::controller::BleConnector;
-use esp_radio::wifi::{
-    ClientConfig, Config as WifiConfig, ScanConfig as WifiScanConfig, WifiController, WifiDevice,
-};
+use esp_radio::wifi::WifiController;
+use esp_radio::wifi::scan::ScanConfig as WifiScanConfig;
 use smart_leds::colors::*;
 use static_cell::StaticCell;
 use tildagon::battery::{Battery, BatteryState};
@@ -253,28 +251,16 @@ async fn status_led_task(
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: NetRunner<'static, WifiDevice<'static>>) {
-    runner.run().await;
-}
-
-#[embassy_executor::task]
 async fn wifi_scan_task(mut controller: WifiController<'static>) {
     println!("WiFi scan task started");
     loop {
         if SHUTTING_DOWN.load(Ordering::Relaxed) {
             break;
         }
-        if matches!(controller.is_started(), Ok(false)) {
-            let config = ClientConfig::default();
-            controller
-                .set_config(&esp_radio::wifi::ModeConfig::Client(config))
-                .unwrap();
-            controller.start_async().await.expect("WiFi start failed");
-        }
 
         println!("Scanning for WiFi networks...");
         let config = WifiScanConfig::default();
-        match controller.scan_with_config_async(config).await {
+        match controller.scan_async(&config).await {
             Ok(networks) => {
                 WIFI_SCAN_COUNT.fetch_add(1, Ordering::Relaxed);
                 let count = networks.len() as u32;
@@ -287,14 +273,8 @@ async fn wifi_scan_task(mut controller: WifiController<'static>) {
                 println!("Found {} networks:", networks.len());
                 for network in networks {
                     println!(
-                        "SSID: {:15} | BSSID: {:02X?}:{:02X?}:{:02X?}:{:02X?}:{:02X?}:{:02X?} | RSSI: {:4} | Channel: {:2}",
+                        "SSID: {:?} | RSSI: {:4} | Channel: {:2}",
                         network.ssid,
-                        network.bssid[0],
-                        network.bssid[1],
-                        network.bssid[2],
-                        network.bssid[3],
-                        network.bssid[4],
-                        network.bssid[5],
                         network.signal_strength,
                         network.channel
                     );
@@ -638,28 +618,24 @@ async fn main(spawner: Spawner) {
     // Start the background button service
     let button_manager = TildagonHardware::init_button_manager(&spawner, shared_i2c);
 
-    spawner
-        .spawn(status_led_task(
-            leds,
-            button_manager.subscribe(),
-            STATUS_CHANNEL.subscriber().unwrap(),
-        ))
-        .expect("Failed to spawn status_led_task");
+    spawner.spawn(status_led_task(
+        leds,
+        button_manager.subscribe(),
+        STATUS_CHANNEL.subscriber().unwrap(),
+    ).unwrap());
 
     let mut battery = Battery::new(system_i2c_bus(shared_i2c));
 
     if let Some(display) = display {
-        spawner
-            .spawn(display_task(
-                display,
-                Battery::new(system_i2c_bus(shared_i2c)),
-            ))
-            .expect("Failed to spawn display_task");
+        spawner.spawn(display_task(
+            display,
+            Battery::new(system_i2c_bus(shared_i2c)),
+        ).unwrap());
     }
 
     // WiFi Init
     let (wifi_controller, _wifi_interfaces) = radio
-        .init_wifi(WifiConfig::default())
+        .init_wifi(Default::default())
         .expect("WiFi init failed");
 
     // TODO only create embassy_net and its runner when we want to transmit: avoids WARN - esp_wifi_internal_tx 12294
@@ -698,18 +674,10 @@ async fn main(spawner: Spawner) {
         ..
     } = ble_stack.build();
 
-    // spawner
-    //     .spawn(net_task(runner))
-    //     .expect("Failed to spawn net_task");
-    spawner
-        .spawn(wifi_scan_task(wifi_controller))
-        .expect("Failed to spawn wifi_scan_task");
-    spawner
-        .spawn(ble_task(ble_runner))
-        .expect("Failed to spawn ble_task");
-    spawner
-        .spawn(ble_scan_task(central))
-        .expect("Failed to spawn ble_scan_task");
+    // spawner.spawn(net_task(runner).unwrap());
+    spawner.spawn(wifi_scan_task(wifi_controller).unwrap());
+    spawner.spawn(ble_task(ble_runner).unwrap());
+    spawner.spawn(ble_scan_task(central).unwrap());
 
     println!("[BUTTON] Waiting for button events...");
     let mut sub = button_manager.subscribe();

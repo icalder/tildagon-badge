@@ -2,10 +2,8 @@
 pub enum Error {
     I2c(esp_hal::i2c::master::Error),
     I2cConfig(esp_hal::i2c::master::ConfigError),
-    Leds(esp_hal_smartled::LedAdapterError),
+    Leds(crate::leds::LedAdapterError),
     Pins(embedded_hal::digital::ErrorKind),
-    #[cfg(feature = "radio")]
-    Radio(esp_radio::InitializationError),
     #[cfg(feature = "radio")]
     RadioAlreadyInitialized,
     #[cfg(feature = "radio")]
@@ -15,7 +13,7 @@ pub enum Error {
     #[cfg(feature = "radio")]
     WifiAlreadyInitialized,
     #[cfg(feature = "radio")]
-    BleConfig(esp_radio::ble::InvalidConfigError),
+    BleInit(esp_radio::ble::controller::BleInitError),
     #[cfg(feature = "radio")]
     BleAlreadyInitialized,
 }
@@ -32,8 +30,8 @@ impl From<esp_hal::i2c::master::ConfigError> for Error {
     }
 }
 
-impl From<esp_hal_smartled::LedAdapterError> for Error {
-    fn from(e: esp_hal_smartled::LedAdapterError) -> Self {
+impl From<crate::leds::LedAdapterError> for Error {
+    fn from(e: crate::leds::LedAdapterError) -> Self {
         Error::Leds(e)
     }
 }
@@ -46,8 +44,8 @@ impl From<esp_radio::wifi::WifiError> for Error {
 }
 
 #[cfg(feature = "radio")]
-impl From<esp_radio::ble::InvalidConfigError> for Error {
-    fn from(e: esp_radio::ble::InvalidConfigError) -> Self {
-        Error::BleConfig(e)
+impl From<esp_radio::ble::controller::BleInitError> for Error {
+    fn from(e: esp_radio::ble::controller::BleInitError) -> Self {
+        Error::BleInit(e)
     }
 }

@@ -12,7 +12,7 @@ test = false
 doctest = false
 
 [dependencies]
-embassy-executor = "0.9.1"
+embassy-executor = "0.10.0"
 embassy-time = "0.5.1"
 embassy-sync = "0.8.0"
 heapless = "0.8.0"
@@ -22,17 +22,16 @@ esp-rtos = { version = "0.2.0", features = ["embassy", "log-04"] }
 esp-println = { version = "0.16.1", features = ["log-04"] }
 log = "0.4"
 smart-leds = "0.4.0"
-esp-hal-smartled = "0.17.0"
 static_cell = "2.1.0"
 embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
 mipidsi = "0.10.0"
 embedded-graphics = "0.8.2"
 embedded-hal-bus = "0.3.0"
-esp-radio = { version = "0.17.0", features = ["esp32s3", "wifi", "ble", "coex", "log-04", "unstable"], optional = true }
+esp-radio = { path = "../esp-hal/esp-radio", features = ["esp32s3", "wifi", "ble", "coex", "log-04", "unstable"], optional = true }
 embassy-net = { version = "0.9.0", features = ["tcp", "udp", "dhcpv4", "medium-ethernet", "proto-ipv4"], optional = true }
-trouble-host = { version = "0.4.0", features = ["central", "scan", "gatt"], optional = true }
-bt-hci = { version = "0.6.0", optional = true }
+trouble-host = { version = "0.6.0", features = ["central", "scan", "gatt"], optional = true }
+bt-hci = { version = "0.8.0", optional = true }
 esp-alloc = { version = "0.9.0", optional = true }
 
 [features]

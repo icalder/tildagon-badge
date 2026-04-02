@@ -205,8 +205,8 @@ fn encode_advertisement(name: &str) -> Result<([u8; 31], usize, [u8; 31], usize)
     Ok((adv_data, adv_len, scan_data, scan_len))
 }
 
-fn preferred_connection_params() -> ConnectParams {
-    ConnectParams {
+fn preferred_connection_params() -> RequestedConnParams {
+    RequestedConnParams {
         min_connection_interval: Duration::from_micros(BLE_CONN_INTERVAL_MIN_US),
         max_connection_interval: Duration::from_micros(BLE_CONN_INTERVAL_MAX_US),
         max_latency: BLE_CONN_MAX_LATENCY,
@@ -367,7 +367,7 @@ async fn button_handler_task(
 }
 
 async fn gatt_connection_task(
-    _stack: &'static BleStack,
+    stack: &'static BleStack,
     server: &'static BadgeServer<'static>,
     conn: &GattConnection<'static, 'static, DefaultPacketPool>,
     led_pub: &LedPublisher,
@@ -423,19 +423,18 @@ async fn gatt_connection_task(
                     conn_interval, peripheral_latency, supervision_timeout
                 );
             }
-            GattConnectionEvent::RequestConnectionParams {
-                min_connection_interval,
-                max_connection_interval,
-                max_latency,
-                supervision_timeout,
-            } => {
+            GattConnectionEvent::RequestConnectionParams(req) => {
+                let p = req.params();
                 println!(
                     "[BLE] remote requested conn params: interval={:?}..{:?} latency={} timeout={:?}",
-                    min_connection_interval,
-                    max_connection_interval,
-                    max_latency,
-                    supervision_timeout
+                    p.min_connection_interval,
+                    p.max_connection_interval,
+                    p.max_latency,
+                    p.supervision_timeout
                 );
+                if let Err(e) = req.accept(None, stack).await {
+                    println!("[BLE] failed to accept connection params: {:?}", e);
+                }
             }
             GattConnectionEvent::DataLengthUpdated { .. } => {}
         }
@@ -576,28 +575,20 @@ async fn main(spawner: Spawner) {
         StaticCell::new();
     let led_channel = LED_CHANNEL.init(PubSubChannel::new());
 
-    spawner
-        .spawn(ble_runner_task(ble_runner))
-        .expect("Failed to spawn ble_runner_task");
-    spawner
-        .spawn(led_task(led_channel.subscriber().unwrap(), leds))
-        .expect("Failed to spawn led_task");
-    spawner
-        .spawn(button_handler_task(
-            button_manager.subscribe(),
-            led_channel.publisher().unwrap(),
-            Battery::new(system_i2c_bus(shared_i2c)),
-        ))
-        .expect("Failed to spawn button_handler_task");
-    spawner
-        .spawn(ble_peripheral_task(
-            peripheral,
-            ble_stack,
-            server,
-            led_channel.publisher().unwrap(),
-            badge_name.as_str(),
-        ))
-        .expect("Failed to spawn ble_peripheral_task");
+    spawner.spawn(ble_runner_task(ble_runner).unwrap());
+    spawner.spawn(led_task(led_channel.subscriber().unwrap(), leds).unwrap());
+    spawner.spawn(button_handler_task(
+        button_manager.subscribe(),
+        led_channel.publisher().unwrap(),
+        Battery::new(system_i2c_bus(shared_i2c)),
+    ).unwrap());
+    spawner.spawn(ble_peripheral_task(
+        peripheral,
+        ble_stack,
+        server,
+        led_channel.publisher().unwrap(),
+        badge_name.as_str(),
+    ).unwrap());
 
     println!("[BUTTON] All tasks started, background polling active.");
     loop {

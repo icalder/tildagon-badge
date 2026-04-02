@@ -41,10 +41,10 @@ impl TildagonHardware {
         let delay = Delay::new();
 
         let timg0 = TimerGroup::new(peripherals.TIMG0);
+        let sw_interrupt = esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
         esp_rtos::start(
             timg0.timer0,
-            #[cfg(target_arch = "riscv32")]
-            esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT),
+            sw_interrupt.software_interrupt0,
         );
 
         let i2c_res = crate::resources::I2cResources {
@@ -142,12 +142,12 @@ impl TildagonHardware {
         crate::display::init(top_board, display, buffer)
     }
 
-    /// Initialize the shared radio controller and take ownership of the WiFi/BLE peripherals.
+    /// Initialize the shared radio handle and take ownership of the WiFi/BLE peripherals.
     #[cfg(feature = "radio")]
     pub fn init_radio(&mut self) -> Result<crate::radio::TildagonRadio, Error> {
-        let controller = crate::radio::init_radio_controller()?;
+        crate::radio::init_radio_heap_once();
         let radio_res = self.radio_res.take().ok_or(Error::RadioUnavailable)?;
-        Ok(crate::radio::TildagonRadio::new(controller, radio_res))
+        Ok(crate::radio::TildagonRadio::new(radio_res))
     }
 
     /// Start the background button polling service.
@@ -163,7 +163,7 @@ impl TildagonHardware {
             crate::i2c::system_i2c_bus(shared_i2c),
         );
 
-        spawner.must_spawn(crate::buttons::button_manager_task(buttons));
+        spawner.spawn(crate::buttons::button_manager_task(buttons).unwrap());
 
         crate::buttons::ButtonManager
     }

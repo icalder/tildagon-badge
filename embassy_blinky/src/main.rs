@@ -436,21 +436,23 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    spawner.spawn(run()).expect("Failed to spawn run_task");
+    spawner.spawn(run().expect("Failed to spawn run_task"));
 
-    spawner
-        .spawn(button_monitor(
+    spawner.spawn(
+        button_monitor(
             button_manager.subscribe(),
             Battery::new(system_i2c_bus(shared_i2c)),
-        ))
-        .expect("Failed to spawn button_monitor");
+        )
+        .expect("Failed to spawn button_monitor"),
+    );
 
     match display {
         Ok(display) => {
             let battery = Battery::new(system_i2c_bus(shared_i2c));
-            spawner
-                .spawn(display_task(display, button_manager.subscribe(), battery))
-                .expect("Failed to spawn display_task");
+            spawner.spawn(
+                display_task(display, button_manager.subscribe(), battery)
+                    .expect("Failed to spawn display_task"),
+            );
         }
         Err(e) => {
             esp_println::println!("[DISPLAY] Init error: {:?}", e);
@@ -466,9 +468,7 @@ async fn main(spawner: Spawner) {
     .await
     .expect("Typed LED init failed");
 
-    spawner
-        .spawn(blinky(leds, button_manager.subscribe()))
-        .expect("Failed to spawn blinky");
+    spawner.spawn(blinky(leds, button_manager.subscribe()).expect("Failed to spawn blinky"));
 
     esp_println::println!("[BUTTON] All tasks started, background polling active.");
     loop {

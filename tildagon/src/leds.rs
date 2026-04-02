@@ -1,13 +1,17 @@
-use esp_hal::{Blocking, gpio::Level, rmt::{Channel, PulseCode, Tx, TxChannelConfig, TxChannelCreator}};
+use esp_hal::{Blocking, gpio::Level, rmt::{Channel, PulseCode, Tx, TxChannelConfig, TxChannelCreator, Error as RmtError}};
 use esp_hal::rmt::Rmt;
 use esp_hal::time::Rate;
 use esp_hal::peripherals::{RMT, GPIO21};
-use esp_hal_smartled::LedAdapterError;
 use smart_leds::{RGB8, colors};
 use static_cell::StaticCell;
 use crate::Error;
 use crate::pins::LedPins;
 use crate::i2c::SystemI2cBus;
+
+#[derive(Debug, Copy, Clone)]
+pub enum LedAdapterError {
+    TransmissionError(RmtError),
+}
 
 pub const NUM_LEDS: usize = 19;
 const PULSES_PER_LED: usize = 24; 
@@ -70,7 +74,7 @@ pub struct Leds {
 impl Leds {
     pub fn new(rmt_peripheral: RMT<'static>, led_pin: GPIO21<'static>) -> Self {
         let rmt = Rmt::new(rmt_peripheral, Rate::from_mhz(80)).unwrap();
-        let channel = rmt.channel0.configure_tx(led_pin, led_channel_config()).unwrap();
+        let channel = rmt.channel0.configure_tx(&led_channel_config()).unwrap().with_pin(led_pin);
         static RMT_BUFFER: StaticCell<[PulseCode; TX_BUFFER_SIZE]> = StaticCell::new();
         let buffer = RMT_BUFFER.init([PulseCode::end_marker(); TX_BUFFER_SIZE]);
         Self { channel: Some(channel), buffer }
@@ -96,7 +100,10 @@ impl Leds {
                     }
                 }
             }
-            Err(e) => Err(Error::Leds(LedAdapterError::TransmissionError(e))),
+            Err((e, chan)) => {
+                self.channel = Some(chan);
+                Err(Error::Leds(LedAdapterError::TransmissionError(e)))
+            }
         }
     }
 

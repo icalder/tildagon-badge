@@ -23,7 +23,7 @@ async fn main(_spawner: Spawner) {
         .await
         .expect("Tildagon hardware init failed");
 
-    _spawner.spawn(hello_world_task()).expect("spawn hello_world_task");
+    _spawner.spawn(hello_world_task().expect("spawn hello_world_task"));
     loop {
         Timer::after(Duration::from_secs(60)).await;
     }
