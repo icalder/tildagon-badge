@@ -524,6 +524,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "embassy_hello_world"
+version = "0.0.0"
+dependencies = [
+ "embassy-executor",
+ "embassy-time",
+ "esp-backtrace",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-println",
+ "esp-rtos",
+ "tildagon",
+]
+
+[[package]]
 name = "embassy_wifi_ble"
 version = "0.0.0"
 dependencies = [

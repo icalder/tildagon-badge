@@ -4,7 +4,8 @@ members = [
     "tildagon",
     "embassy_blinky",
     "embassy_wifi_ble",
-    "embassy_bluetooth_remote"
+    "embassy_bluetooth_remote",
+    "embassy_hello_world"
 ]
 
 [profile.release]

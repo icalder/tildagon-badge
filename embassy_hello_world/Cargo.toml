@@ -1,0 +1,31 @@
+[package]
+name = "embassy_hello_world"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+embassy-executor = "0.9.1"
+embassy-time = "0.5.1"
+esp-backtrace = { version = "0.18.1", features = ["panic-handler", "println"] }
+esp-bootloader-esp-idf = "0.4.0"
+esp-hal = { version = "1.0.0", features = ["log-04", "unstable"] }
+esp-rtos = { version = "0.2.0", features = ["embassy", "log-04"] }
+esp-println = { version = "0.16.1", features = ["log-04"] }
+tildagon = { path = "../tildagon" }
+
+[features]
+default = ["esp32s3"]
+esp32s3 = [
+  "esp-backtrace/esp32s3",
+  "esp-bootloader-esp-idf/esp32s3",
+  "esp-rtos/esp32s3",
+  "esp-hal/esp32s3",
+]
+
+[[bin]]
+name = "embassy_hello_world"
+path = "src/main.rs"
+test = false
+doctest = false
+bench = false
