@@ -34,6 +34,7 @@ pub struct TypedButtons<BUS: 'static> {
     system_i2c: crate::i2c::SystemI2cBus<BUS>,
     last_state_59: u8,
     last_state_5a: u8,
+    synchronized: bool,
 }
 
 impl<BUS: 'static> TypedButtons<BUS>
@@ -49,6 +50,31 @@ where
             system_i2c,
             last_state_59: 0xFF,
             last_state_5a: 0xFF,
+            synchronized: false,
+        }
+    }
+
+    async fn read_states_once(&mut self) -> Result<(u8, u8), Error> {
+        let mut port0_59 = [self.last_state_59; 1];
+        let mut port0_5a = [self.last_state_5a; 1];
+
+        let mut bus: embassy_sync::mutex::MutexGuard<'_, crate::i2c::SharingRawMutex, BUS> =
+            self.system_i2c.lock().await?;
+        bus.write_read(0x59u8, &[0x00], &mut port0_59).await?;
+        bus.write_read(0x5au8, &[0x00], &mut port0_5a).await?;
+
+        Ok((port0_59[0], port0_5a[0]))
+    }
+
+    async fn read_states(&mut self) -> Result<(u8, u8), Error> {
+        match self.read_states_once().await {
+            Err(Error::I2c(esp_hal::i2c::master::Error::Timeout)) => {
+                // A single timeout tends to be transient under radio load, so retry once
+                // before surfacing an error to the caller.
+                Timer::after(Duration::from_millis(2)).await;
+                self.read_states_once().await
+            }
+            result => result,
         }
     }
 
@@ -58,19 +84,17 @@ where
     /// registers for the two chips containing buttons. This is faster and
     /// much more reliable than interrupt-driven reads during high radio activity.
     pub async fn poll(&mut self) -> Result<Vec<ButtonEvent, 12>, Error> {
-        let mut port0_59 = [self.last_state_59; 1];
-        let mut port0_5a = [self.last_state_5a; 1];
+        let (state_59, state_5a) = self.read_states().await?;
 
-        // Surgical 2-read check
-        {
-            let mut bus: embassy_sync::mutex::MutexGuard<'_, crate::i2c::SharingRawMutex, BUS> = 
-                self.system_i2c.lock().await?;
-            bus.write_read(0x59u8, &[0x00], &mut port0_59).await?;
-            bus.write_read(0x5au8, &[0x00], &mut port0_5a).await?;
+        if !self.synchronized {
+            self.last_state_59 = state_59;
+            self.last_state_5a = state_5a;
+            self.synchronized = true;
+            return Ok(Vec::new());
         }
 
-        let changed_59 = port0_59[0] ^ self.last_state_59;
-        let changed_5a = port0_5a[0] ^ self.last_state_5a;
+        let changed_59 = state_59 ^ self.last_state_59;
+        let changed_5a = state_5a ^ self.last_state_5a;
 
         if changed_59 == 0 && changed_5a == 0 {
             return Ok(Vec::new());
@@ -91,15 +115,15 @@ where
             };
         }
 
-        check_button!(changed_59, port0_59[0], 0, Button::C);
-        check_button!(changed_59, port0_59[0], 1, Button::D);
-        check_button!(changed_59, port0_59[0], 2, Button::E);
-        check_button!(changed_59, port0_59[0], 3, Button::F);
-        check_button!(changed_5a, port0_5a[0], 6, Button::A);
-        check_button!(changed_5a, port0_5a[0], 7, Button::B);
+        check_button!(changed_59, state_59, 0, Button::C);
+        check_button!(changed_59, state_59, 1, Button::D);
+        check_button!(changed_59, state_59, 2, Button::E);
+        check_button!(changed_59, state_59, 3, Button::F);
+        check_button!(changed_5a, state_5a, 6, Button::A);
+        check_button!(changed_5a, state_5a, 7, Button::B);
 
-        self.last_state_59 = port0_59[0];
-        self.last_state_5a = port0_5a[0];
+        self.last_state_59 = state_59;
+        self.last_state_5a = state_5a;
 
         Ok(events)
     }
