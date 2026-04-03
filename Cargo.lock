@@ -1393,6 +1393,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "itag_finder"
+version = "0.0.1"
+dependencies = [
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-sync 0.6.2",
+ "embassy-time",
+ "esp-backtrace",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-println",
+ "esp-radio",
+ "esp-rtos",
+ "static_cell",
+ "tildagon",
+ "trouble-host",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"

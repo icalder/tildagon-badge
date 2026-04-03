@@ -1,0 +1,36 @@
+[package]
+name = "itag_finder"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[dependencies]
+embassy-executor = "0.10.0"
+embassy-time = "0.5.1"
+esp-backtrace = { version = "0.18.1", features = ["panic-handler", "println"] }
+esp-bootloader-esp-idf = "0.4.0"
+esp-hal = { version = "1.0.0", features = ["log-04", "unstable"] }
+esp-println = { version = "0.16.1", features = ["log-04"] }
+embassy-futures = "0.1.2"
+esp-radio = { git = "https://github.com/esp-rs/esp-hal.git", rev = "6c57123dce155d7935d011666b14b2390ef1d894", features = ["esp32s3", "wifi", "ble", "coex", "log-04", "unstable"] }
+esp-rtos = { version = "0.2.0", features = ["embassy", "log-04"] }
+embassy-sync = "0.6.1"
+static_cell = "2.1.0"
+tildagon = { path = "../tildagon", features = ["radio"] }
+trouble-host = { version = "0.6.0", features = ["central", "scan", "gatt"] }
+
+[features]
+default = ["esp32s3"]
+esp32s3 = [
+  "esp-backtrace/esp32s3",
+  "esp-bootloader-esp-idf/esp32s3",
+  "esp-rtos/esp32s3",
+  "esp-hal/esp32s3",
+]
+
+[[bin]]
+name = "itag_finder"
+path = "src/main.rs"
+test = false
+doctest = false
+bench = false

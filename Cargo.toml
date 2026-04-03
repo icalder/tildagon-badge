@@ -5,7 +5,8 @@ members = [
     "embassy_blinky",
     "embassy_wifi_ble",
     "embassy_bluetooth_remote",
-    "embassy_hello_world"
+    "embassy_hello_world",
+    "itag_finder"
 ]
 
 [profile.release]
