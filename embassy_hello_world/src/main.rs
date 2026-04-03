@@ -17,13 +17,13 @@ async fn hello_world_task() {
 }
 
 #[esp_rtos::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     let _hardware = TildagonHardware::new(peripherals)
         .await
         .expect("Tildagon hardware init failed");
 
-    _spawner.spawn(hello_world_task().expect("spawn hello_world_task"));
+    spawner.spawn(hello_world_task().expect("spawn hello_world_task"));
     loop {
         Timer::after(Duration::from_secs(60)).await;
     }
