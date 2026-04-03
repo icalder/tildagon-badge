@@ -1398,7 +1398,7 @@ version = "0.0.1"
 dependencies = [
  "embassy-executor",
  "embassy-futures",
- "embassy-sync 0.6.2",
+ "embassy-sync 0.8.0",
  "embassy-time",
  "esp-backtrace",
  "esp-bootloader-esp-idf",

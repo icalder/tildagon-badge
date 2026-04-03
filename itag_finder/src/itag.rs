@@ -1,4 +1,5 @@
 use core::cell::RefCell;
+use core::sync::atomic::Ordering;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Timer};
 use esp_println::println;
@@ -73,6 +74,11 @@ pub async fn itag_task(
         crate::ble::active_scan_config(Duration::from_secs(1), Duration::from_secs(1));
 
     loop {
+        if crate::SHUTTING_DOWN.load(Ordering::Relaxed) {
+            println!("Shutting down, stopping iTAG task");
+            break;
+        }
+
         println!("Scanning for iTAG devices...");
         let (next_central, addr) = crate::ble::scan_until_result(central, &ble_scan_config).await;
         central = next_central;
@@ -111,7 +117,7 @@ pub async fn itag_task(
                     Ok(client) => {
                         println!("BLE: GATT client created, discovering services...");
 
-                        use embassy_futures::select::{select, Either};
+                        use embassy_futures::select::{Either, select};
 
                         let gatt_task = client.task();
                         let discovery_task = async {
