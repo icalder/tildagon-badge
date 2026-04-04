@@ -20,6 +20,7 @@ tildagon = { path = "../tildagon", features = ["radio"] }
 trouble-host = { version = "0.6.0", features = ["central", "scan", "gatt"] }
 embedded-graphics = "0.8.2"
 heapless = "0.9.2"
+smart-leds = "0.4.0"
 
 [features]
 default = ["esp32s3"]

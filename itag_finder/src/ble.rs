@@ -1,9 +1,8 @@
 use core::str;
-use embassy_time::Duration;
+use embassy_time::{Duration, Instant, Timer};
 use esp_hal::rng::Rng;
 use static_cell::StaticCell;
 use trouble_host::advertise::AdStructure;
-use trouble_host::central::Central;
 use trouble_host::prelude::*;
 
 use crate::BleExternalController;
@@ -18,7 +17,13 @@ pub struct DiscoveryState {
     pub name_len: u8,
     pub service_found: bool,
     pub mfg_found: bool,
+    pub last_emitted_rssi: i8,
+    pub last_emit_at: Option<Instant>,
+    pub emitted_with_name: bool,
 }
+
+const RSSI_EMIT_THRESHOLD_DBM: i16 = 2;
+const MIN_EMIT_INTERVAL: Duration = Duration::from_millis(1500);
 
 impl DiscoveryState {
     pub fn is_complete(&self) -> bool {
@@ -42,6 +47,25 @@ impl DiscoveryState {
             self.name_len = len as u8;
         }
     }
+
+    fn should_emit(&self, rssi: i8, now: Instant) -> bool {
+        let Some(last_emit_at) = self.last_emit_at else {
+            return true;
+        };
+
+        let rssi_delta = (rssi as i16 - self.last_emitted_rssi as i16).abs();
+        let name_gained = self.name_len > 0 && !self.emitted_with_name;
+
+        name_gained
+            || rssi_delta >= RSSI_EMIT_THRESHOLD_DBM
+            || now.duration_since(last_emit_at) >= MIN_EMIT_INTERVAL
+    }
+
+    fn mark_emitted(&mut self, rssi: i8, now: Instant) {
+        self.last_emitted_rssi = rssi;
+        self.last_emit_at = Some(now);
+        self.emitted_with_name = self.name_len > 0;
+    }
 }
 
 pub struct ScannerHandler {
@@ -63,8 +87,10 @@ impl ScannerHandler {
         name: Option<&str>,
         has_itag_service: bool,
         has_itag_mfg: bool,
-    ) -> DiscoveryState {
+        rssi: i8,
+    ) -> Option<DiscoveryState> {
         let mut devices = self.seen_devices.borrow_mut();
+        let now = Instant::now();
 
         // 1. Try to find existing entry
         for entry in devices.iter_mut() {
@@ -81,7 +107,11 @@ impl ScannerHandler {
                         state.mfg_found = true;
                         esp_println::println!("Device {:?} now has mfg data", addr.addr);
                     }
-                    return *state;
+                    if state.is_complete() && state.should_emit(rssi, now) {
+                        state.mark_emitted(rssi, now);
+                        return Some(*state);
+                    }
+                    return None;
                 }
             }
         }
@@ -97,8 +127,15 @@ impl ScannerHandler {
                     new_state.service_found = has_itag_service;
                     new_state.mfg_found = has_itag_mfg;
                     *entry = Some(new_state);
-                    esp_println::println!("New iTag candidate: {:?} (svc={}, mfg={})", addr.addr, has_itag_service, has_itag_mfg);
-                    return new_state;
+                    esp_println::println!(
+                        "New iTag candidate: {:?} (svc={}, mfg={})",
+                        addr.addr,
+                        has_itag_service,
+                        has_itag_mfg
+                    );
+                    new_state.mark_emitted(rssi, now);
+                    *entry = Some(new_state);
+                    return Some(new_state);
                 }
             }
 
@@ -112,10 +149,13 @@ impl ScannerHandler {
             devices[idx] = Some(new_state);
             self.next_eviction.set((idx + 1) % 64);
             esp_println::println!("Cache full, evicting slot {} for {:?}", idx, addr.addr);
-            return new_state;
+            let mut emitted_state = new_state;
+            emitted_state.mark_emitted(rssi, now);
+            devices[idx] = Some(emitted_state);
+            return Some(emitted_state);
         }
-        
-        DiscoveryState::default()
+
+        None
     }
 }
 
@@ -128,30 +168,36 @@ impl EventHandler for ScannerHandler {
                     || has_service_uuid16(report.data, 0x1802)
                     || has_service_uuid16(report.data, 0x1803);
                 let has_itag_mfg = has_manufacturer_data(report.data, 0x0105);
-                
+
                 let addr = Address {
                     kind: report.addr_kind,
                     addr: report.addr,
                 };
 
-                let discovery_state = self.update_device(addr, name, has_itag_service, has_itag_mfg);
-
-                if discovery_state.is_complete() {
+                if let Some(discovery_state) =
+                    self.update_device(addr, name, has_itag_service, has_itag_mfg, report.rssi)
+                {
                     let mut heapless_name = None;
                     if let Some(n) = discovery_state.name_as_str() {
                         let mut s = heapless::String::new();
                         let _ = s.push_str(n);
                         heapless_name = Some(s);
                     }
-                    
-                    if let Err(_) = BLE_EVENTS.try_send(BleEvent::DeviceSeen(
-                        addr,
-                        report.rssi,
-                        heapless_name,
-                    )) {
-                        esp_println::println!("BLE: Channel full, dropping report for {:?}", addr.addr);
+
+                    if let Err(_) =
+                        BLE_EVENTS.try_send(BleEvent::DeviceSeen(addr, report.rssi, heapless_name))
+                    {
+                        esp_println::println!(
+                            "BLE: Channel full, dropping report for {:?}",
+                            addr.addr
+                        );
                     } else {
-                        // Success: app should receive it
+                        esp_println::println!(
+                            "BLE: queued detection {:?} rssi={} name={:?}",
+                            addr.addr,
+                            report.rssi,
+                            discovery_state.name_as_str()
+                        );
                     }
                 }
             }
@@ -191,6 +237,29 @@ pub fn active_scan_config(interval: Duration, window: Duration) -> ScanConfig<'s
     config.interval = interval;
     config.window = window;
     config
+}
+
+pub fn build_connect_config<'a>(
+    filter_accept_list: &'a [(AddrKind, &'a BdAddr)],
+) -> ConnectConfig<'a> {
+    ConnectConfig {
+        scan_config: ScanConfig {
+            active: true,
+            interval: Duration::from_millis(100),
+            window: Duration::from_millis(100),
+            filter_accept_list,
+            phys: PhySet::M1,
+            timeout: Duration::from_secs(10),
+        },
+        connect_params: RequestedConnParams {
+            min_connection_interval: Duration::from_millis(30),
+            max_connection_interval: Duration::from_millis(60),
+            max_latency: 0,
+            supervision_timeout: Duration::from_secs(10),
+            min_event_length: Duration::from_millis(0),
+            max_event_length: Duration::from_millis(0),
+        },
+    }
 }
 
 pub fn advertised_name(data: &[u8]) -> Option<&str> {
@@ -236,7 +305,6 @@ pub fn has_service_uuid16(data: &[u8], target_uuid: u16) -> bool {
                         }
                     }
                 }
-                // Also handle cases where decode might return Unknown for these types if not fully supported
                 AdStructure::Unknown { ty, data } if ty == 0x02 || ty == 0x03 => {
                     for chunk in data.chunks_exact(2) {
                         if let Ok(uuid_bytes) = chunk.try_into() {
@@ -258,36 +326,18 @@ pub async fn ble_task(
     mut runner: Runner<'static, BleExternalController, DefaultPacketPool>,
     handler: &'static ScannerHandler,
 ) {
-    esp_println::println!("BLE runner started");
-    runner.run_with_handler(handler).await.unwrap();
-}
-
-#[embassy_executor::task]
-pub async fn scanner_task(
-    central: Central<'static, BleExternalController, DefaultPacketPool>,
-) {
-    esp_println::println!("Scanner task started");
-    let mut scanner = Scanner::new(central);
-    let config = active_scan_config(Duration::from_millis(100), Duration::from_millis(100));
-    
+    let mut attempt = 0u32;
     loop {
-        let _scan_session = scanner.scan(&config).await.expect("BLE scan failed");
-        
-        // Restart scan every 10 seconds to keep it fresh
-        embassy_futures::select::select(
-            embassy_time::Timer::after(Duration::from_secs(10)),
-            async {
-                loop {
-                    if crate::SHUTTING_DOWN.load(core::sync::atomic::Ordering::Relaxed) {
-                        break;
-                    }
-                    embassy_time::Timer::after(Duration::from_secs(1)).await;
-                }
+        attempt += 1;
+        esp_println::println!("BLE runner starting (attempt {})", attempt);
+        match runner.run_with_handler(handler).await {
+            Ok(()) => {
+                esp_println::println!("BLE runner exited cleanly; restarting");
             }
-        ).await;
-
-        if crate::SHUTTING_DOWN.load(core::sync::atomic::Ordering::Relaxed) {
-            break;
+            Err(e) => {
+                esp_println::println!("BLE runner error: {:?}; restarting", e);
+            }
         }
+        Timer::after(Duration::from_millis(250)).await;
     }
 }

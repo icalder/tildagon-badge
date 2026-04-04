@@ -11,9 +11,9 @@ pub enum BleEvent {
 pub enum ButtonEvent {
     Up,
     Down,
+    ToggleRadar,
     Select,
     Back,
-    PowerOff,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,4 +24,5 @@ pub enum SystemEvent {
 pub static BLE_EVENTS: Channel<CriticalSectionRawMutex, BleEvent, 16> = Channel::new();
 pub static BUTTON_EVENTS: Channel<CriticalSectionRawMutex, ButtonEvent, 8> = Channel::new();
 pub static SYSTEM_EVENTS: Channel<CriticalSectionRawMutex, SystemEvent, 4> = Channel::new();
-pub static DISPLAY_SIGNAL: embassy_sync::signal::Signal<CriticalSectionRawMutex, ()> = embassy_sync::signal::Signal::new();
+pub static DISPLAY_SIGNAL: embassy_sync::signal::Signal<CriticalSectionRawMutex, ()> =
+    embassy_sync::signal::Signal::new();
