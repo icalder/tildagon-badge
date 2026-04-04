@@ -15,10 +15,11 @@ embassy-futures = "0.1.2"
 esp-radio = { git = "https://github.com/esp-rs/esp-hal.git", rev = "6c57123dce155d7935d011666b14b2390ef1d894", features = ["esp32s3", "wifi", "ble", "coex", "log-04", "unstable"] }
 esp-rtos = { version = "0.2.0", features = ["embassy", "log-04"] }
 embassy-sync = "0.8.0"
-static_cell = "2.1.0"
+static_cell = "2.1.1"
 tildagon = { path = "../tildagon", features = ["radio"] }
 trouble-host = { version = "0.6.0", features = ["central", "scan", "gatt"] }
 embedded-graphics = "0.8.2"
+heapless = "0.9.2"
 
 [features]
 default = ["esp32s3"]

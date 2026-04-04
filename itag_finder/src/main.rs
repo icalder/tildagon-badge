@@ -4,6 +4,7 @@
 mod ble;
 mod buttons;
 mod display;
+mod events;
 mod itag;
 
 use core::sync::atomic::AtomicBool;
@@ -76,10 +77,11 @@ async fn main(spawner: Spawner) {
         )
         .expect("Failed to spawn button_monitor"),
     );
-    static ITAG_HANDLER: StaticCell<crate::itag::ItagScannerHandler> = StaticCell::new();
-    let itag_handler = ITAG_HANDLER.init(crate::itag::ItagScannerHandler::new());
-    spawner.spawn(crate::itag::ble_task(ble_runner, itag_handler).expect("spawn ble_task"));
-    spawner.spawn(crate::itag::itag_task(central, stack).expect("spawn itag_task"));
+    static SCANNER_HANDLER: StaticCell<crate::ble::ScannerHandler> = StaticCell::new();
+    let scanner_handler = SCANNER_HANDLER.init(crate::ble::ScannerHandler::new());
+    spawner.spawn(crate::ble::ble_task(ble_runner, scanner_handler).expect("spawn ble_task"));
+    spawner.spawn(crate::ble::scanner_task(central).expect("spawn scanner_task"));
+    spawner.spawn(crate::itag::itag_task(stack).expect("spawn itag_task"));
     spawner.spawn(crate::display::display_task(display).expect("spawn display_task"));
 
     loop {

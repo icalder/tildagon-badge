@@ -1,6 +1,4 @@
 use core::str;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
 use embassy_time::Duration;
 use esp_hal::rng::Rng;
 use static_cell::StaticCell;
@@ -9,43 +7,154 @@ use trouble_host::central::Central;
 use trouble_host::prelude::*;
 
 use crate::BleExternalController;
+use crate::events::{BLE_EVENTS, BleEvent};
 
-pub static SCAN_RESULTS: Channel<CriticalSectionRawMutex, Address, 4> = Channel::new();
+use core::cell::{Cell, RefCell};
 
-pub struct SeenAddresses<const N: usize> {
-    addresses: [Option<Address>; N],
-    count: usize,
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DiscoveryState {
+    pub addr: Option<BdAddr>,
+    pub name: [u8; 32],
+    pub name_len: u8,
+    pub service_found: bool,
+    pub mfg_found: bool,
 }
 
-impl<const N: usize> SeenAddresses<N> {
-    pub const fn new() -> Self {
-        Self {
-            addresses: [None; N],
-            count: 0,
+impl DiscoveryState {
+    pub fn is_complete(&self) -> bool {
+        // Relaxed: either service or manufacturer data is enough to identify as iTag
+        self.service_found || self.mfg_found
+    }
+
+    pub fn name_as_str(&self) -> Option<&str> {
+        if self.name_len == 0 {
+            None
+        } else {
+            core::str::from_utf8(&self.name[..self.name_len as usize]).ok()
         }
     }
 
-    fn contains(&self, addr: &Address) -> bool {
-        for i in 0..self.count {
-            if let Some(seen_addr) = self.addresses[i] {
-                if seen_addr.kind == addr.kind && seen_addr.addr == addr.addr {
-                    return true;
+    pub fn set_name(&mut self, name: Option<&str>) {
+        if let Some(n) = name {
+            let bytes = n.as_bytes();
+            let len = core::cmp::min(32, bytes.len());
+            self.name[..len].copy_from_slice(&bytes[..len]);
+            self.name_len = len as u8;
+        }
+    }
+}
+
+pub struct ScannerHandler {
+    seen_devices: RefCell<[Option<DiscoveryState>; 64]>,
+    next_eviction: Cell<usize>,
+}
+
+impl ScannerHandler {
+    pub const fn new() -> Self {
+        Self {
+            seen_devices: RefCell::new([None; 64]),
+            next_eviction: Cell::new(0),
+        }
+    }
+
+    fn update_device(
+        &self,
+        addr: Address,
+        name: Option<&str>,
+        has_itag_service: bool,
+        has_itag_mfg: bool,
+    ) -> DiscoveryState {
+        let mut devices = self.seen_devices.borrow_mut();
+
+        // 1. Try to find existing entry
+        for entry in devices.iter_mut() {
+            if let Some(state) = entry {
+                if state.addr == Some(addr.addr) {
+                    if name.is_some() && state.name_len == 0 {
+                        state.set_name(name);
+                    }
+                    if has_itag_service && !state.service_found {
+                        state.service_found = true;
+                        esp_println::println!("Device {:?} now has service", addr.addr);
+                    }
+                    if has_itag_mfg && !state.mfg_found {
+                        state.mfg_found = true;
+                        esp_println::println!("Device {:?} now has mfg data", addr.addr);
+                    }
+                    return *state;
                 }
             }
         }
-        false
-    }
 
-    pub fn insert(&mut self, addr: Address) -> bool {
-        if self.contains(&addr) {
-            return false;
+        // 2. Not found. Only add if it has iTag markers (service or mfg)
+        if has_itag_service || has_itag_mfg {
+            // Find an empty slot
+            for entry in devices.iter_mut() {
+                if entry.is_none() {
+                    let mut new_state = DiscoveryState::default();
+                    new_state.set_name(name);
+                    new_state.addr = Some(addr.addr);
+                    new_state.service_found = has_itag_service;
+                    new_state.mfg_found = has_itag_mfg;
+                    *entry = Some(new_state);
+                    esp_println::println!("New iTag candidate: {:?} (svc={}, mfg={})", addr.addr, has_itag_service, has_itag_mfg);
+                    return new_state;
+                }
+            }
+
+            // 3. Cache full, evict one (round-robin)
+            let idx = self.next_eviction.get();
+            let mut new_state = DiscoveryState::default();
+            new_state.set_name(name);
+            new_state.addr = Some(addr.addr);
+            new_state.service_found = has_itag_service;
+            new_state.mfg_found = has_itag_mfg;
+            devices[idx] = Some(new_state);
+            self.next_eviction.set((idx + 1) % 64);
+            esp_println::println!("Cache full, evicting slot {} for {:?}", idx, addr.addr);
+            return new_state;
         }
-        if self.count < N {
-            self.addresses[self.count] = Some(addr);
-            self.count += 1;
-            true
-        } else {
-            false
+        
+        DiscoveryState::default()
+    }
+}
+
+impl EventHandler for ScannerHandler {
+    fn on_adv_reports(&self, reports: LeAdvReportsIter<'_>) {
+        for report in reports {
+            if let Ok(report) = report {
+                let name = advertised_name(report.data);
+                let has_itag_service = has_service_uuid16(report.data, 0xFFE0)
+                    || has_service_uuid16(report.data, 0x1802)
+                    || has_service_uuid16(report.data, 0x1803);
+                let has_itag_mfg = has_manufacturer_data(report.data, 0x0105);
+                
+                let addr = Address {
+                    kind: report.addr_kind,
+                    addr: report.addr,
+                };
+
+                let discovery_state = self.update_device(addr, name, has_itag_service, has_itag_mfg);
+
+                if discovery_state.is_complete() {
+                    let mut heapless_name = None;
+                    if let Some(n) = discovery_state.name_as_str() {
+                        let mut s = heapless::String::new();
+                        let _ = s.push_str(n);
+                        heapless_name = Some(s);
+                    }
+                    
+                    if let Err(_) = BLE_EVENTS.try_send(BleEvent::DeviceSeen(
+                        addr,
+                        report.rssi,
+                        heapless_name,
+                    )) {
+                        esp_println::println!("BLE: Channel full, dropping report for {:?}", addr.addr);
+                    } else {
+                        // Success: app should receive it
+                    }
+                }
+            }
         }
     }
 }
@@ -84,41 +193,6 @@ pub fn active_scan_config(interval: Duration, window: Duration) -> ScanConfig<'s
     config
 }
 
-/// Build a ConnectConfig wired for a short, active scan and conservative
-/// connection parameters targeting a single device.
-///
-/// The caller provides `filter_accept_list` as a slice whose lifetime must
-/// outlive the returned `ConnectConfig`. Typical usage supplies a small
-/// stack-allocated array like:
-///
-/// let filter = [(addr.kind, &addr.addr)];
-/// let cfg = build_connect_config(&filter);
-///
-/// This helper centralizes the platform-specific scan timings and requested
-/// connection parameters.
-pub fn build_connect_config<'a>(
-    filter_accept_list: &'a [(AddrKind, &'a BdAddr)],
-) -> ConnectConfig<'a> {
-    ConnectConfig {
-        scan_config: ScanConfig {
-            active: true,
-            interval: Duration::from_millis(100),
-            window: Duration::from_millis(100),
-            filter_accept_list,
-            phys: PhySet::M1,
-            timeout: Duration::from_secs(10),
-        },
-        connect_params: RequestedConnParams {
-            min_connection_interval: Duration::from_millis(30),
-            max_connection_interval: Duration::from_millis(60),
-            max_latency: 0,
-            supervision_timeout: Duration::from_secs(10),
-            min_event_length: Duration::from_millis(0),
-            max_event_length: Duration::from_millis(0),
-        },
-    }
-}
-
 pub fn advertised_name(data: &[u8]) -> Option<&str> {
     let mut shortened_name = None;
 
@@ -155,7 +229,6 @@ pub fn has_service_uuid16(data: &[u8], target_uuid: u16) -> bool {
     for res in AdStructure::decode(data) {
         if let Ok(structure) = res {
             match structure {
-                // 1. Handle what the library already recognizes (Type 0x03)
                 AdStructure::ServiceUuids16(uuids) => {
                     for uuid in uuids {
                         if u16::from_le_bytes(*uuid) == target_uuid {
@@ -163,9 +236,8 @@ pub fn has_service_uuid16(data: &[u8], target_uuid: u16) -> bool {
                         }
                     }
                 }
-                // 2. Handle the "Incomplete" list (Type 0x02) manually
-                AdStructure::Unknown { ty: 0x02, data } => {
-                    // Data is a list of 2-byte UUIDs
+                // Also handle cases where decode might return Unknown for these types if not fully supported
+                AdStructure::Unknown { ty, data } if ty == 0x02 || ty == 0x03 => {
                     for chunk in data.chunks_exact(2) {
                         if let Ok(uuid_bytes) = chunk.try_into() {
                             if u16::from_le_bytes(uuid_bytes) == target_uuid {
@@ -181,47 +253,41 @@ pub fn has_service_uuid16(data: &[u8], target_uuid: u16) -> bool {
     false
 }
 
-/// Start an active scan and wait until some higher-level handler publishes a
-/// matching device address into `SCAN_RESULTS`.
-///
-/// The ownership flow here is a little unusual:
-///
-/// 1. We take ownership of `central` and wrap it in a `Scanner`, because the
-///    trouble-host API performs scanning through that wrapper rather than
-///    directly on `Central`.
-/// 2. Calling `scanner.scan(...)` starts scanning and returns a `scan_session`.
-///    Keeping that session alive is what keeps the scan running.
-/// 3. While the scan is active, the BLE runner task delivers advertisement
-///    reports to the current `EventHandler`. That handler decides which
-///    advertisements are interesting and sends their `Address` values into
-///    `SCAN_RESULTS`.
-/// 4. This function waits on `SCAN_RESULTS.receive()` until one such address
-///    arrives. It does not inspect advertisements itself; it only manages the
-///    generic scan lifecycle and hands back the first matching result.
-/// 5. After receiving one address, we drain any queued extras so the caller
-///    does not immediately reconnect to stale discoveries from the same scan.
-/// 6. We then drop `scan_session` explicitly. That stops the active scan before
-///    we try to use the same controller for a connection attempt.
-/// 7. Finally, `scanner.into_inner()` gives ownership of `Central` back to the
-///    caller together with the chosen address.
-///
-/// In short: this helper owns the scan start/stop mechanics, while the
-/// caller's event handler owns the policy for deciding which advertisements are
-/// worth returning.
-pub async fn scan_until_result(
-    central: Central<'static, BleExternalController, DefaultPacketPool>,
-    scan_config: &ScanConfig<'_>,
-) -> (
-    Central<'static, BleExternalController, DefaultPacketPool>,
-    Address,
+#[embassy_executor::task]
+pub async fn ble_task(
+    mut runner: Runner<'static, BleExternalController, DefaultPacketPool>,
+    handler: &'static ScannerHandler,
 ) {
+    esp_println::println!("BLE runner started");
+    runner.run_with_handler(handler).await.unwrap();
+}
+
+#[embassy_executor::task]
+pub async fn scanner_task(
+    central: Central<'static, BleExternalController, DefaultPacketPool>,
+) {
+    esp_println::println!("Scanner task started");
     let mut scanner = Scanner::new(central);
-    let scan_session = scanner.scan(scan_config).await.expect("BLE scan failed");
+    let config = active_scan_config(Duration::from_millis(100), Duration::from_millis(100));
+    
+    loop {
+        let _scan_session = scanner.scan(&config).await.expect("BLE scan failed");
+        
+        // Restart scan every 10 seconds to keep it fresh
+        embassy_futures::select::select(
+            embassy_time::Timer::after(Duration::from_secs(10)),
+            async {
+                loop {
+                    if crate::SHUTTING_DOWN.load(core::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    embassy_time::Timer::after(Duration::from_secs(1)).await;
+                }
+            }
+        ).await;
 
-    let addr = SCAN_RESULTS.receive().await;
-    while SCAN_RESULTS.try_receive().is_ok() {}
-
-    drop(scan_session);
-
-    (scanner.into_inner(), addr)
+        if crate::SHUTTING_DOWN.load(core::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+    }
 }

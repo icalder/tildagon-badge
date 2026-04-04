@@ -4,9 +4,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::pubsub::Subscriber;
 use embassy_time::Duration;
 use tildagon::battery::Battery;
-use tildagon::buttons::{Button, ButtonEvent};
+use tildagon::buttons::{Button, ButtonEvent as PhysicalButtonEvent};
+use crate::events::{BUTTON_EVENTS, ButtonEvent as AppButtonEvent, SYSTEM_EVENTS, SystemEvent};
 
-type ButtonSubscriber = Subscriber<'static, CriticalSectionRawMutex, ButtonEvent, 16, 4, 1>;
+type ButtonSubscriber = Subscriber<'static, CriticalSectionRawMutex, PhysicalButtonEvent, 16, 4, 1>;
 
 #[embassy_executor::task]
 pub async fn button_monitor(
@@ -18,47 +19,53 @@ pub async fn button_monitor(
 
     loop {
         let event = sub.next_message_pure().await;
-        esp_println::println!("[BUTTON_MONITOR] Event: {:?}", event);
 
-        if event != ButtonEvent::Pressed(Button::F) {
-            continue;
-        }
-
-        esp_println::println!("[BUTTON_MONITOR] Hold F for 2s to power off");
-
-        match embassy_time::with_timeout(power_hold_time, async {
-            loop {
-                let event = sub.next_message_pure().await;
-                esp_println::println!("[BUTTON_MONITOR] Event: {:?}", event);
-
-                if event == ButtonEvent::Released(Button::F) {
-                    break;
-                }
+        match event {
+            PhysicalButtonEvent::Pressed(Button::A) => {
+                let _ = BUTTON_EVENTS.try_send(AppButtonEvent::Up);
             }
-        })
-        .await
-        {
-            Ok(()) => {
-                esp_println::println!("[BUTTON_MONITOR] Power-off cancelled");
+            PhysicalButtonEvent::Pressed(Button::D) => {
+                let _ = BUTTON_EVENTS.try_send(AppButtonEvent::Down);
             }
-            Err(_) => {
-                esp_println::println!("[BUTTON_MONITOR] Long press detected, powering off");
-                match battery.power_off().await {
+            PhysicalButtonEvent::Pressed(Button::C) => {
+                let _ = BUTTON_EVENTS.try_send(AppButtonEvent::Select);
+            }
+            PhysicalButtonEvent::Pressed(Button::F) => {
+                // Handle short press (Back) and long press (PowerOff)
+                match embassy_time::with_timeout(power_hold_time, async {
+                    loop {
+                        let event = sub.next_message_pure().await;
+                        if event == PhysicalButtonEvent::Released(Button::F) {
+                            return;
+                        }
+                    }
+                })
+                .await
+                {
                     Ok(()) => {
-                        crate::SHUTTING_DOWN.store(true, Ordering::Relaxed);
-                        esp_println::println!(
-                            "[BUTTON_MONITOR] BATFET disabled; waiting for power loss"
-                        );
-                        break;
+                        // Short press
+                        let _ = BUTTON_EVENTS.try_send(AppButtonEvent::Back);
                     }
-                    Err(e) => {
-                        esp_println::println!(
-                            "[BUTTON_MONITOR] Failed to request power-off: {:?}",
-                            e
-                        );
+                    Err(_) => {
+                        // Long press
+                        esp_println::println!("[BUTTON_MONITOR] Long press detected, powering off");
+                        let _ = BUTTON_EVENTS.try_send(AppButtonEvent::PowerOff);
+                        let _ = SYSTEM_EVENTS.try_send(SystemEvent::PowerOff);
+                        
+                        match battery.power_off().await {
+                            Ok(()) => {
+                                crate::SHUTTING_DOWN.store(true, Ordering::Relaxed);
+                                esp_println::println!("[BUTTON_MONITOR] BATFET disabled; waiting for power loss");
+                                break;
+                            }
+                            Err(e) => {
+                                esp_println::println!("[BUTTON_MONITOR] Failed to request power-off: {:?}", e);
+                            }
+                        }
                     }
                 }
             }
+            _ => {}
         }
     }
 }
