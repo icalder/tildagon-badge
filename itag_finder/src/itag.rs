@@ -10,7 +10,7 @@ use heapless::Vec;
 use trouble_host::central::Central;
 use trouble_host::prelude::*;
 
-const DEVICE_STALE_AFTER: Duration = Duration::from_secs(30);
+const DEVICE_STALE_AFTER: Duration = Duration::from_secs(20);
 const SCAN_IDLE_RESTART_AFTER: Duration = Duration::from_secs(2);
 const SCAN_SESSION_RESTART_AFTER: Duration = Duration::from_secs(10);
 const IMMEDIATE_ALERT_SERVICE_UUID: u16 = 0x1802;
@@ -46,15 +46,15 @@ pub enum RssiHeatLevel {
 pub fn rssi_heat_level(rssi: i8) -> RssiHeatLevel {
     // RSSI is already logarithmic (dBm), so bias the buckets toward weaker
     // values to keep nearby devices in the warmer colors longer.
-    if rssi >= -58 {
+    if rssi >= -68 {
         RssiHeatLevel::Hot
-    } else if rssi >= -66 {
+    } else if rssi >= -76 {
         RssiHeatLevel::Warm
-    } else if rssi >= -74 {
-        RssiHeatLevel::Near
     } else if rssi >= -84 {
+        RssiHeatLevel::Near
+    } else if rssi >= -92 {
         RssiHeatLevel::Cool
-    } else if rssi >= -96 {
+    } else if rssi >= -100 {
         RssiHeatLevel::Cold
     } else {
         RssiHeatLevel::Far
