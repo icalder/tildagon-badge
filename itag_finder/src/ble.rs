@@ -84,6 +84,41 @@ pub fn active_scan_config(interval: Duration, window: Duration) -> ScanConfig<'s
     config
 }
 
+/// Build a ConnectConfig wired for a short, active scan and conservative
+/// connection parameters targeting a single device.
+///
+/// The caller provides `filter_accept_list` as a slice whose lifetime must
+/// outlive the returned `ConnectConfig`. Typical usage supplies a small
+/// stack-allocated array like:
+///
+/// let filter = [(addr.kind, &addr.addr)];
+/// let cfg = build_connect_config(&filter);
+///
+/// This helper centralizes the platform-specific scan timings and requested
+/// connection parameters.
+pub fn build_connect_config<'a>(
+    filter_accept_list: &'a [(AddrKind, &'a BdAddr)],
+) -> ConnectConfig<'a> {
+    ConnectConfig {
+        scan_config: ScanConfig {
+            active: true,
+            interval: Duration::from_millis(100),
+            window: Duration::from_millis(100),
+            filter_accept_list,
+            phys: PhySet::M1,
+            timeout: Duration::from_secs(10),
+        },
+        connect_params: RequestedConnParams {
+            min_connection_interval: Duration::from_millis(30),
+            max_connection_interval: Duration::from_millis(60),
+            max_latency: 0,
+            supervision_timeout: Duration::from_secs(10),
+            min_event_length: Duration::from_millis(0),
+            max_event_length: Duration::from_millis(0),
+        },
+    }
+}
+
 pub fn advertised_name(data: &[u8]) -> Option<&str> {
     let mut shortened_name = None;
 
@@ -150,10 +185,7 @@ pub async fn scan_until_result(
     Address,
 ) {
     let mut scanner = Scanner::new(central);
-    let scan_session = scanner
-        .scan(scan_config)
-        .await
-        .expect("BLE scan failed");
+    let scan_session = scanner.scan(scan_config).await.expect("BLE scan failed");
 
     let addr = SCAN_RESULTS.receive().await;
     while SCAN_RESULTS.try_receive().is_ok() {}

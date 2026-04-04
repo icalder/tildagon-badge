@@ -85,24 +85,8 @@ pub async fn itag_task(
 
         println!("BLE: Probing device [{:02X?}]...", addr.addr.0);
 
-        let config = ConnectConfig {
-            scan_config: ScanConfig {
-                active: true,
-                interval: Duration::from_millis(100),
-                window: Duration::from_millis(100),
-                filter_accept_list: &[(addr.kind, &addr.addr)],
-                phys: PhySet::M1,
-                timeout: Duration::from_secs(10),
-            },
-            connect_params: RequestedConnParams {
-                min_connection_interval: Duration::from_millis(30),
-                max_connection_interval: Duration::from_millis(60),
-                max_latency: 0,
-                supervision_timeout: Duration::from_secs(10),
-                min_event_length: Duration::from_millis(0),
-                max_event_length: Duration::from_millis(0),
-            },
-        };
+        let filter = [(addr.kind, &addr.addr)];
+        let config = crate::ble::build_connect_config(&filter);
 
         match central.connect(&config).await {
             Ok(connection) => {
