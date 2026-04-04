@@ -13,25 +13,141 @@ static SEEN_ITAGS: embassy_sync::blocking_mutex::Mutex<
     RefCell<crate::ble::SeenAddresses<16>>,
 > = embassy_sync::blocking_mutex::Mutex::new(RefCell::new(crate::ble::SeenAddresses::new()));
 
-pub struct ItagScannerHandler;
+#[derive(Debug, Clone, Copy)]
+pub struct DiscoveryState {
+    pub addr: Option<BdAddr>,
+    pub name: [u8; 32],
+    pub name_len: u8,
+    pub service_found: bool,
+    pub mfg_found: bool,
+}
+
+impl DiscoveryState {
+    pub fn is_complete(&self) -> bool {
+        self.name_len > 0 && self.service_found && self.mfg_found
+    }
+
+    pub fn name_as_str(&self) -> Option<&str> {
+        if self.name_len == 0 {
+            None
+        } else {
+            core::str::from_utf8(&self.name[..self.name_len as usize]).ok()
+        }
+    }
+
+    pub fn set_name(&mut self, name: Option<&str>) {
+        if let Some(n) = name {
+            let bytes = n.as_bytes();
+            let len = core::cmp::min(32, bytes.len());
+            self.name[..len].copy_from_slice(&bytes[..len]);
+            self.name_len = len as u8;
+        }
+    }
+}
+
+impl Default for DiscoveryState {
+    fn default() -> Self {
+        Self {
+            addr: None,
+            name: [0; 32],
+            name_len: 0,
+            service_found: false,
+            mfg_found: false,
+        }
+    }
+}
+
+pub struct ItagScannerHandler {
+    seen_devices: RefCell<[Option<DiscoveryState>; 32]>,
+}
+
+impl ItagScannerHandler {
+    pub const fn new() -> Self {
+        Self {
+            seen_devices: RefCell::new([None; 32]),
+        }
+    }
+
+    fn update_device(
+        &self,
+        addr: Address,
+        name: Option<&str>,
+        has_itag_service: bool,
+        has_itag_mfg: bool,
+    ) -> DiscoveryState {
+        let mut devices = self.seen_devices.borrow_mut();
+
+        // Check if we already have an entry for this device
+        for entry in devices.iter_mut() {
+            if let Some(state) = entry {
+                if state.addr == Some(addr.addr) {
+                    state.set_name(name);
+                    if has_itag_service {
+                        state.service_found = true;
+                    }
+                    if has_itag_mfg {
+                        state.mfg_found = true;
+                    }
+                    return *state;
+                }
+            }
+        }
+
+        // If not found, add a new entry if there's space
+        for entry in devices.iter_mut() {
+            if entry.is_none() {
+                let mut new_state = DiscoveryState::default();
+                new_state.set_name(name);
+                new_state.addr = Some(addr.addr);
+                new_state.service_found = has_itag_service;
+                new_state.mfg_found = has_itag_mfg;
+                *entry = Some(new_state);
+                return new_state;
+            }
+        }
+
+        DiscoveryState::default()
+    }
+
+    fn remove_device(&self, addr: Address) {
+        let mut devices = self.seen_devices.borrow_mut();
+        for entry in devices.iter_mut() {
+            if let Some(state) = entry {
+                if state.addr == Some(addr.addr) {
+                    *entry = None;
+                    return;
+                }
+            }
+        }
+    }
+}
 
 impl EventHandler for ItagScannerHandler {
     fn on_adv_reports(&self, reports: LeAdvReportsIter<'_>) {
         for report in reports {
             if let Ok(report) = report {
                 let name = crate::ble::advertised_name(report.data);
-                let is_itag_name = name
-                    .as_ref()
-                    .map(|n| n.to_lowercase().contains("itag"))
-                    .unwrap_or(false);
                 let has_itag_service = crate::ble::has_service_uuid16(report.data, 0xFFE0)
                     || crate::ble::has_service_uuid16(report.data, 0x1803);
+                let has_itag_mfg = crate::ble::has_manufacturer_data(report.data, 0x0105);
+                let discovery_state = self.update_device(
+                    Address {
+                        kind: report.addr_kind,
+                        addr: report.addr,
+                    },
+                    name,
+                    has_itag_service,
+                    has_itag_mfg,
+                );
 
-                if is_itag_name || has_itag_service {
+                if discovery_state.is_complete() {
                     let addr = Address {
                         kind: report.addr_kind,
                         addr: report.addr,
                     };
+
+                    // Clear space for next discovery by removing from seen list (we'll add back if it's still there on next report)
+                    self.remove_device(addr);
 
                     // Only process if we haven't seen this iTAG yet
                     let is_new = SEEN_ITAGS.lock(|seen| seen.borrow_mut().insert(addr));
@@ -41,14 +157,14 @@ impl EventHandler for ItagScannerHandler {
 
                     println!(
                         "BLE: Discovered {} [{:02X?} ({:?})], RSSI: {}",
-                        name.unwrap_or("<unknown>"),
+                        discovery_state.name_as_str().unwrap_or("UNKNOWN"),
                         addr.addr.0,
                         addr.kind,
                         report.rssi
                     );
 
                     // Try to send to the scan result channel, ignore if full
-                    let _ = crate::ble::SCAN_RESULTS.try_send(addr);
+                    // let _ = crate::ble::SCAN_RESULTS.try_send(addr);
                 }
             }
         }

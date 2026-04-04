@@ -18,6 +18,7 @@ embassy-sync = "0.8.0"
 static_cell = "2.1.0"
 tildagon = { path = "../tildagon", features = ["radio"] }
 trouble-host = { version = "0.6.0", features = ["central", "scan", "gatt"] }
+embedded-graphics = "0.8.2"
 
 [features]
 default = ["esp32s3"]

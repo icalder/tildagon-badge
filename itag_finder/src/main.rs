@@ -3,6 +3,7 @@
 
 mod ble;
 mod buttons;
+mod display;
 mod itag;
 
 use core::sync::atomic::AtomicBool;
@@ -38,6 +39,12 @@ async fn main(spawner: Spawner) {
         .await
         .expect("Tildagon hardware init failed");
 
+    static DISPLAY_BUFFER: StaticCell<[u8; 1024]> = StaticCell::new();
+    let display_buffer = DISPLAY_BUFFER.init([0u8; 1024]);
+    let display = hardware
+        .init_display(display_buffer)
+        .expect("Display init failed");
+
     let mut radio = hardware.init_radio().expect("Tildagon radio init failed");
 
     static SHARED_I2C: StaticCell<
@@ -69,9 +76,11 @@ async fn main(spawner: Spawner) {
         )
         .expect("Failed to spawn button_monitor"),
     );
-    static ITAG_HANDLER: crate::itag::ItagScannerHandler = crate::itag::ItagScannerHandler;
-    spawner.spawn(crate::itag::ble_task(ble_runner, &ITAG_HANDLER).expect("spawn ble_task"));
+    static ITAG_HANDLER: StaticCell<crate::itag::ItagScannerHandler> = StaticCell::new();
+    let itag_handler = ITAG_HANDLER.init(crate::itag::ItagScannerHandler::new());
+    spawner.spawn(crate::itag::ble_task(ble_runner, itag_handler).expect("spawn ble_task"));
     spawner.spawn(crate::itag::itag_task(central, stack).expect("spawn itag_task"));
+    spawner.spawn(crate::display::display_task(display).expect("spawn display_task"));
 
     loop {
         Timer::after(Duration::from_secs(60)).await;

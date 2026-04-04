@@ -137,13 +137,44 @@ pub fn advertised_name(data: &[u8]) -> Option<&str> {
     shortened_name
 }
 
+pub fn has_manufacturer_data(data: &[u8], target_id: u16) -> bool {
+    for res in AdStructure::decode(data) {
+        if let Ok(AdStructure::ManufacturerSpecificData {
+            company_identifier, ..
+        }) = res
+        {
+            if company_identifier == target_id {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn has_service_uuid16(data: &[u8], target_uuid: u16) -> bool {
     for res in AdStructure::decode(data) {
-        if let Ok(AdStructure::ServiceUuids16(uuids)) = res {
-            for uuid in uuids {
-                if u16::from_le_bytes(*uuid) == target_uuid {
-                    return true;
+        if let Ok(structure) = res {
+            match structure {
+                // 1. Handle what the library already recognizes (Type 0x03)
+                AdStructure::ServiceUuids16(uuids) => {
+                    for uuid in uuids {
+                        if u16::from_le_bytes(*uuid) == target_uuid {
+                            return true;
+                        }
+                    }
                 }
+                // 2. Handle the "Incomplete" list (Type 0x02) manually
+                AdStructure::Unknown { ty: 0x02, data } => {
+                    // Data is a list of 2-byte UUIDs
+                    for chunk in data.chunks_exact(2) {
+                        if let Ok(uuid_bytes) = chunk.try_into() {
+                            if u16::from_le_bytes(uuid_bytes) == target_uuid {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
