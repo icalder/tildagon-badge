@@ -42,5 +42,8 @@ cargo run -p embassy_blinky --release
 cargo build -p embassy_wifi_ble --features esp32s3 --target xtensa-esp32s3-none-elf --release
 cargo run -p embassy_wifi_ble --release
 
+# Building a firmware bin file
+espflash save-image --chip esp32s3 target/xtensa-esp32s3-none-elf/release/itag_finder firmware.bin
+
 # PWA for Bluetooth LED Control
 https://icalder.github.io/tildagon-badge/pwa/ble-led-demo.html
