@@ -32,7 +32,7 @@ espflash save-image --chip esp32 target/xtensa-esp32-none-elf/release/embassy_bl
 To flash, and monitor output:
   • cargo espflash flash --monitor --features esp32 --target xtensa-esp32-none-elf --release
   • cargo run --release (alias of ^)
-  • picocom --baud=115200 --imap lfcrlf /dev/ttyUSB0
+  • picocom --baud=115200 --imap lfcrlf /dev/ttyACM0
 
 Or, using the Cargo root project:
 
@@ -43,7 +43,11 @@ cargo build -p embassy_wifi_ble --features esp32s3 --target xtensa-esp32s3-none-
 cargo run -p embassy_wifi_ble --release
 
 # Building a firmware bin file
-espflash save-image --chip esp32s3 target/xtensa-esp32s3-none-elf/release/itag_finder firmware.bin
+espflash save-image --chip esp32s3 --merge --flash-mode dio --flash-size 8mb target/xtensa-esp32s3-none-elf/release/itag_finder firmware.bin
+
+# Flashing using Expressif web flasher
+https://espressif.github.io/esptool-js/
+Note!! make sure flash address offset is set to 0x0 and mode to dio
 
 # PWA for Bluetooth LED Control
 https://icalder.github.io/tildagon-badge/pwa/ble-led-demo.html
