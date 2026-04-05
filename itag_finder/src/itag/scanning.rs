@@ -1,5 +1,7 @@
 use crate::events::{BLE_EVENTS, BUTTON_EVENTS, BleEvent, ButtonEvent, DISPLAY_SIGNAL};
-use crate::itag::{APP_STATE, DEVICE_STALE_AFTER, Mode, SCAN_IDLE_RESTART_AFTER, SCAN_SESSION_RESTART_AFTER};
+use crate::itag::{
+    APP_STATE, DEVICE_STALE_AFTER, Mode, SCAN_IDLE_RESTART_AFTER, SCAN_SESSION_RESTART_AFTER,
+};
 use core::sync::atomic::Ordering;
 use embassy_futures::select::{Either3, select3};
 use embassy_time::{Duration, Instant, Timer};
@@ -163,4 +165,3 @@ pub async fn run_scanning(
     println!("BLE: Scan task ready to restart scanner");
     central
 }
-
